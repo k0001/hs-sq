@@ -1,0 +1,554 @@
+{-# LANGUAGE StrictData #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE NoFieldSelectors #-}
+
+module Sqlime.Internal where
+
+import Control.Applicative
+import Control.Concurrent
+import Control.Concurrent.STM
+import Control.Exception qualified as BEx
+import Control.Exception.Safe qualified as Ex
+import Control.Monad
+import Control.Monad.Codensity
+import Control.Monad.IO.Class
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Reader
+import Control.Monad.Trans.Resource qualified as R
+import Data.Acquire qualified as A
+import Data.Bool
+import Data.Char qualified as Ch
+import Data.Coerce
+import Data.Foldable
+import Data.Functor.Contravariant
+import Data.Functor.Contravariant.Divisible
+import Data.Int
+import Data.List.NonEmpty qualified as NEL
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
+import Data.Monoid
+import Data.Profunctor
+import Data.String
+import Data.Text qualified as T
+import Database.SQLite3 qualified as S
+import GHC.Show
+import Language.Haskell.TH.Quote (QuasiQuoter (..))
+import Streaming qualified as Z
+import Streaming.Prelude qualified as Z
+
+import Sqlime.Support
+
+--------------------------------------------------------------------------------
+
+-- | The @NULL@ SQL datatype.
+data Null = Null
+   deriving stock (Eq, Ord, Show)
+
+instance Semigroup Null where
+   _ <> _ = Null
+
+instance Monoid Null where
+   mempty = Null
+
+--------------------------------------------------------------------------------
+
+-- | Ideally, encoding a value of type @a@ should never fail. However, that
+-- implies that @a@ should be small enough that all of its inhabitants can be
+-- safely represented as 'S.SQLData', which in practice often means that @a@
+-- will often have to be a @newtype@ leading to a lot of boilerplate. To help
+-- reduce that boilerplate, we allow the 'Encoder' to fail.
+--
+-- See 'encodeSizedIntegral' as a motivating example.
+newtype Encoder a = Encoder (a -> Either String S.SQLData)
+   deriving
+      (Contravariant)
+      via Op (Either String S.SQLData)
+
+runEncoder :: Encoder a -> a -> Either String S.SQLData
+runEncoder = coerce
+
+--------------------------------------------------------------------------------
+
+data ErrDecoder
+   = -- | The list mentions the supported types.
+     ErrDecoder_Type (NEL.NonEmpty S.ColumnType)
+   | ErrDecoder_Fail String
+   deriving stock (Eq, Show)
+   deriving anyclass (Ex.Exception)
+
+newtype Decoder a
+   = Decoder (S.SQLData -> Either ErrDecoder a)
+   deriving
+      (Functor, Applicative, Monad)
+      via ReaderT S.SQLData (Either ErrDecoder)
+
+runDecoder
+   :: Decoder a -> S.SQLData -> Either ErrDecoder a
+runDecoder = coerce
+
+-- | @'mempty' = 'pure' 'mempty'@
+instance (Monoid a) => Monoid (Decoder a) where
+   mempty = pure mempty
+
+-- | @('<>') == 'liftA2' ('<>')@
+instance (Semigroup a) => Semigroup (Decoder a) where
+   (<>) = liftA2 (<>)
+
+instance MonadFail Decoder where
+   fail = Decoder . const . Left . ErrDecoder_Fail
+
+-- | Leftmost result on success, rightmost error on failure.
+instance Alternative Decoder where
+   empty = fail "empty"
+   (<|>) = mplus
+
+-- | Leftmost result on success, rightmost error on failure.
+instance MonadPlus Decoder where
+   mzero = fail "mzero"
+   mplus = \l r -> Decoder \s ->
+      either (\_ -> runDecoder r s) pure (runDecoder l s)
+
+--------------------------------------------------------------------------------
+
+newtype Name = Name T.Text
+   deriving newtype (Eq, Ord, Show)
+
+instance IsString Name where
+   fromString = either error id . name . T.pack
+
+unName :: Name -> T.Text
+unName = coerce
+
+-- | ASCII letters, digits or underscores.
+-- First character must be letter or underscore.
+name :: T.Text -> Either String Name
+name t0 = do
+   (c0, t1) <- maybe err1 pure $ T.uncons t0
+   unless
+      (c0 == '_' || (Ch.isAscii c0 && Ch.isAlpha c0))
+      err1
+   unless
+      ( T.all
+         (\c -> c == '_' || (Ch.isAscii c && (Ch.isAlpha c || Ch.isDigit c)))
+         t1
+      )
+      err2
+   pure $ Name t0
+  where
+   err1 = Left "Expected ASCII letter or digit"
+   err2 = Left "Expected ASCII letter, digit or underscore"
+
+--------------------------------------------------------------------------------
+
+data BindingName = BindingName Name [Name]
+   deriving stock (Eq, Ord)
+
+instance Show BindingName where
+   showsPrec n = showsPrec n . renderBindingName
+
+bindingName :: Name -> BindingName
+bindingName n = BindingName n []
+
+consBindingName :: Name -> BindingName -> BindingName
+consBindingName a (BindingName b cs) = BindingName a (b : cs)
+
+-- | @$foo::bar::baz@
+renderBindingName :: BindingName -> T.Text
+renderBindingName (BindingName x xs) =
+   T.cons '$' $ T.intercalate "::" $ fmap unName (x : xs)
+
+--------------------------------------------------------------------------------
+
+newtype Binder a
+   = Binder (a -> Map.Map BindingName (Either String S.SQLData))
+   deriving newtype
+      ( Semigroup
+        -- ^ Left-biased.
+      , Monoid
+      )
+   deriving
+      (Contravariant, Divisible, Decidable)
+      via Op (Map.Map BindingName (Either String S.SQLData))
+
+runBinder
+   :: Binder a -> a -> Map.Map BindingName (Either String S.SQLData)
+runBinder = coerce
+
+data ErrBinding = ErrBinding BindingName String
+   deriving stock (Eq, Show)
+   deriving anyclass (Ex.Exception)
+
+encode :: Name -> Encoder i -> Binder i
+encode n e = Binder (Map.singleton (bindingName n) . runEncoder e)
+
+push :: Name -> (s -> a) -> Binder a -> Binder s
+push n s2a ba = Binder \s ->
+   Map.mapKeysMonotonic (consBindingName n) (runBinder ba (s2a s))
+
+bindStatement :: S.Statement -> Binder i -> i -> IO ()
+bindStatement st ii i = do
+   !m <-
+      Map.mapKeysMonotonic renderBindingName
+         <$> Map.traverseWithKey
+            (\bn -> either (Ex.throwM . ErrBinding bn) pure)
+            (runBinder ii i)
+   S.bindNamed st $! Map.toAscList m
+
+--------------------------------------------------------------------------------
+
+data RowDecoder a
+   = RowDecoder_Pure a
+   | RowDecoder_Fail String
+   | RowDecoder_Decode Name (Decoder (RowDecoder a))
+
+data ErrRowDecoder
+   = ErrRowDecoder_ColumnValue Name ErrDecoder
+   | ErrRowDecoder_ColumnMissing Name
+   | ErrRowDecoder_Fail String
+   deriving stock (Eq, Show)
+   deriving anyclass (Ex.Exception)
+
+decode :: Name -> Decoder a -> RowDecoder a
+decode n vda = RowDecoder_Decode n (RowDecoder_Pure <$> vda)
+
+runRowDecoder
+   :: forall m a
+    . (Monad m)
+   => (Name -> m (Maybe S.SQLData))
+   -> RowDecoder a
+   -> m (Either ErrRowDecoder a)
+runRowDecoder f = \case
+   RowDecoder_Decode n vda -> do
+      f n >>= \case
+         Just s -> case runDecoder vda s of
+            Right d -> runRowDecoder f d
+            Left e -> pure $ Left $ ErrRowDecoder_ColumnValue n e
+         Nothing -> pure $ Left $ ErrRowDecoder_ColumnMissing n
+   RowDecoder_Pure a -> pure $ Right a
+   RowDecoder_Fail e -> pure $ Left $ ErrRowDecoder_Fail e
+
+instance Functor RowDecoder where
+   fmap = liftA
+
+instance Applicative RowDecoder where
+   pure = RowDecoder_Pure
+   liftA2 = liftM2
+
+instance Monad RowDecoder where
+   RowDecoder_Decode n vda >>= k =
+      RowDecoder_Decode n (fmap (>>= k) vda)
+   RowDecoder_Pure a >>= k = k a
+   RowDecoder_Fail e >>= _ = fail e
+
+instance MonadFail RowDecoder where
+   fail = RowDecoder_Fail
+
+instance (Semigroup a) => Semigroup (RowDecoder a) where
+   (<>) = liftA2 (<>)
+
+instance (Monoid a) => Monoid (RowDecoder a) where
+   mempty = pure mempty
+
+--------------------------------------------------------------------------------
+
+newtype ConnectionString = ConnectionString T.Text
+   deriving newtype (Eq, Ord, Show, IsString)
+
+--------------------------------------------------------------------------------
+
+newtype RawStatement = RawStatement T.Text
+   deriving newtype (Eq, Ord, Show, IsString)
+
+rawStatement :: QuasiQuoter
+rawStatement =
+   QuasiQuoter
+      { quoteExp = \s -> [|fromString @RawStatement s|]
+      , quotePat = \_ -> fail "rawStatement: No quotePat"
+      , quoteType = \_ -> fail "rawStatement: No quoteType"
+      , quoteDec = \_ -> fail "rawStatement: No quoteDec"
+      }
+
+--------------------------------------------------------------------------------
+
+data ErrConnection = ErrConnection_Deadlock
+   deriving stock (Eq, Show)
+   deriving anyclass (Ex.Exception)
+
+-- | A database connection handle. It's safe to try to use this 'Connection'
+-- concurrently.
+data Connection = Connection
+   { lock :: MVar (Maybe (Codensity IO S.Database))
+   -- ^ Lock is so that Connection users don't step on each other.
+   -- For example, `Transaction` will hold this lock while active.
+   -- 'Nothing' if is not possible to access the database from here anymore.
+   , statements :: MVar (Map RawStatement PreparedStatement)
+   }
+
+acquireConnectionLock
+   :: String -> Connection -> A.Acquire (Codensity IO S.Database)
+acquireConnectionLock desc conn = do
+   mkAcquire1
+      ( Ex.catchAsync
+         (takeMVar conn.lock)
+         (\BEx.BlockedIndefinitelyOnMVar -> Ex.throwM ErrConnection_Deadlock)
+         >>= \case
+            Just x -> pure x
+            Nothing -> do
+               putMVar conn.lock Nothing
+               Ex.throwM $ resourceVanishedWithCallStack desc
+      )
+      ( -- "try" because the 'Connection' release might have filled
+        -- `conn.lock` with Nothing
+        void . tryPutMVar conn.lock . Just
+      )
+
+data DatabaseMessage
+   = forall x.
+      DatabaseMessage
+      (S.Database -> IO x)
+      (Either Ex.SomeException x -> IO ())
+
+acquireConnection
+   :: ConnectionString
+   -> [S.SQLOpenFlag]
+   -> S.SQLVFS
+   -> A.Acquire Connection
+acquireConnection (ConnectionString t) flags vfs = do
+   statements :: MVar (Map RawStatement PreparedStatement) <-
+      mkAcquire1 (newMVar mempty) \mv ->
+         takeMVar mv >>= traverse_ \ps ->
+            Ex.catchAsync @_ @Ex.SomeException (S.finalize ps.handle) mempty
+   -- We run all interactions with the database through a single background
+   -- thread because it makes it easy to deal with async exceptions. We acquire
+   -- the database handle in that thread to prevent potential problems if
+   -- SQLite expects a particular OS thread.
+   mvDM :: MVar DatabaseMessage <- liftIO newEmptyMVar
+   mvOpen :: MVar (Maybe Ex.SomeException) <- liftIO newEmptyMVar
+   mvStart :: MVar () <- liftIO newEmptyMVar
+   _ <- flip mkAcquire1 killThread do
+      self <- myThreadId
+      forkFinally
+         (background (putMVar mvOpen) (takeMVar mvStart) (takeMVar mvDM))
+         \case
+            Left se
+               | Just BEx.ThreadKilled <- Ex.fromException se -> pure ()
+               | otherwise -> Ex.throwTo self se
+            _ -> pure ()
+   -- If opening the database failed, rethrow the exception synchronously.
+   liftIO $ takeMVar mvOpen >>= maybe (pure ()) Ex.throwM
+   -- Only now we allow the background thread to start working, so that
+   -- we don't receive its async exceptions too early.
+   liftIO $ putMVar mvStart ()
+   lock :: MVar (Maybe (Codensity IO S.Database)) <-
+      mkAcquire1
+         ( newMVar $ Just $ Codensity \act -> do
+            mv <- newEmptyMVar
+            putMVar mvDM $! DatabaseMessage act $ putMVar mv
+            takeMVar mv >>= either Ex.throwM pure
+         )
+         (\mv -> takeMVar mv >> putMVar mv Nothing)
+   pure Connection{statements, lock}
+  where
+   background
+      :: forall x
+       . (Maybe Ex.SomeException -> IO ())
+      -> IO ()
+      -> IO DatabaseMessage
+      -> IO x
+   background onOpen waitStart next =
+      Ex.bracket
+         ( Ex.withException (S.open2 t flags vfs) (onOpen . Just)
+            <* onOpen Nothing
+         )
+         ( \h ->
+            Ex.uninterruptibleMask_ (S.interrupt h)
+               `Ex.finally` S.close h
+         )
+         \h -> do
+            waitStart
+            forever do
+               DatabaseMessage act res <- next
+               Ex.try (act h) >>= res
+
+--------------------------------------------------------------------------------
+
+-- | A database transaction handle. It's safe to try to use this 'Connection'
+-- concurrently.
+--
+-- While the 'Transaction' is active, an exclusive lock is held on the
+-- underlying 'Connection'.
+newtype Transaction
+   = -- | This 'Connection' is a wrapper around the exclusively-locked
+     -- underlying 'Connection', which can be used to interact safely with it.
+     Transaction Connection
+
+-- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
+-- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
+acquireTransaction :: Connection -> A.Acquire Transaction
+acquireTransaction conn = do
+   -- While the Transaction is active, it will hold an exclusive lock on `conn`.
+   Codensity run' <- acquireConnectionLock "Connection" conn
+   mkAcquireType1 (run' (flip S.exec "BEGIN")) $ const \case
+      A.ReleaseEarly -> run' (flip S.exec "COMMIT")
+      A.ReleaseNormal -> run' (flip S.exec "COMMIT")
+      A.ReleaseExceptionWith _ -> run' (flip S.exec "ROLLBACK")
+   lock :: MVar (Maybe (Codensity IO S.Database)) <-
+      mkAcquire1
+         (newMVar $ Just $ Codensity run')
+         (\mv -> takeMVar mv >> putMVar mv Nothing)
+   pure $ Transaction Connection{statements = conn.statements, lock}
+
+--------------------------------------------------------------------------------
+
+-- | A statements statement taking a value @i@ as input and producing rows of
+-- @o@ values as output.
+data Statement i o = Statement
+   { unsafeFFI :: Bool
+   , binder :: Binder i
+   , decoder :: RowDecoder o
+   , raw :: RawStatement
+   }
+
+instance Show (Statement i o) where
+   showsPrec n s =
+      showParen (n >= appPrec1) $
+         showString "Statement{raw = "
+            . shows s.raw
+            . showString ", unsafeFFI = "
+            . shows s.unsafeFFI
+            . showString "}"
+
+statement :: Binder i -> RowDecoder o -> RawStatement -> Statement i o
+statement binder decoder raw = Statement{unsafeFFI = False, ..}
+
+instance Functor (Statement i) where
+   fmap = rmap
+
+instance Profunctor Statement where
+   dimap f g s = s{binder = f >$< s.binder, decoder = g <$> s.decoder}
+
+--------------------------------------------------------------------------------
+
+data PreparedStatement = PreparedStatement
+   { handle :: S.Statement
+   , unsafeFFI :: Bool
+   }
+
+acquirePreparedStatement
+   :: Statement i o
+   -> Connection
+   -> A.Acquire PreparedStatement
+acquirePreparedStatement st conn = do
+   mkAcquire1
+      ( modifyMVar conn.statements \m0 ->
+         case mapPop st.raw m0 of
+            (Just ps, m1) -> pure (m1, ps)
+            (Nothing, m1) ->
+               A.with
+                  (acquireConnectionLock "Connection" conn)
+                  \(Codensity run) ->
+                     run \dbh -> do
+                        sth <- S.prepare dbh $ case st.raw of
+                           RawStatement t -> t
+                        pure (m1, PreparedStatement sth st.unsafeFFI)
+      )
+      \ps -> flip Ex.onException (S.finalize ps.handle) do
+         S.reset ps.handle
+         modifyMVar_ conn.statements (pure . Map.insert st.raw ps)
+
+--------------------------------------------------------------------------------
+
+getStatementColumnNameIndexes :: S.Statement -> IO (Map Name S.ColumnIndex)
+getStatementColumnNameIndexes st = do
+   -- Despite the type name, ncols is a length.
+   S.ColumnIndex (ncols :: Int) <- S.columnCount st
+   foldM
+      ( \ !m i -> do
+         -- Pattern never fails because `i` is in range.
+         Just t <- S.columnName st i
+         case name t of
+            Right n ->
+               Map.alterF
+                  ( \case
+                     Nothing -> pure $ Just i
+                     Just _ -> Ex.throwM $ ErrStatementDuplicateColumnName n
+                  )
+                  n
+                  m
+            Left _ ->
+               -- If `t` is not a valid `Name`, we can just ignore it.
+               -- It just won't be available for lookup by the RowEncoder.
+               pure m
+      )
+      Map.empty
+      (S.ColumnIndex <$> enumFromTo 0 (ncols - 1))
+
+data ErrStatement
+   = ErrStatementDuplicateColumnName Name
+   deriving stock (Eq, Show)
+   deriving anyclass (Ex.Exception)
+
+--------------------------------------------------------------------------------
+
+-- | Get the statement output rows as a list, together with its length.
+--
+-- Holds an exclusive lock on the database connection temporarily, while the
+-- list is being constructed.
+rowsList :: (MonadIO m) => Statement i o -> i -> Transaction -> m (Int64, [o])
+rowsList st i tx =
+   liftIO
+      $ R.runResourceT
+      $ Z.fold_
+         (\(!n, !e) o -> (n + 1, e <> Endo (o :)))
+         (0, mempty)
+         (fmap (flip appEndo []))
+      $ rowsStream st i tx
+
+-- | Stream of output rows.
+--
+-- __An exclusive lock__ will be held on the database while this 'Z.Stream' is
+-- being produced.
+--
+-- __You must exit @m@__, with 'R.runResourceT' or similar, for the transaction
+-- lock and related resources to be released.
+--
+-- __As a convenience__, if the 'Z.Stream' is /fully/ consumed, the resources
+-- associated with it will be released right away, meaning you can defer
+-- exiting @m@ until later.
+rowsStream
+   :: (R.MonadResource m)
+   => Statement i o
+   -> i
+   -> Transaction
+   -> Z.Stream (Z.Of o) m ()
+rowsStream st i (Transaction conn) = do
+   (k0, ps) <- lift $ A.allocateAcquire $ acquirePreparedStatement st conn
+   k1 <- lift do
+      R.allocate_
+         (bindStatement ps.handle st.binder i)
+         (S.clearBindings ps.handle)
+   (k2, _) <- lift do
+      A.allocateAcquire $ acquireConnectionLock "Transaction" conn
+   ixs <- liftIO $ getStatementColumnNameIndexes ps.handle
+   -- tvsth: to make sure ps.handle is not used after release.
+   (k3, tvsth) <- lift do
+      R.allocate
+         (newTMVarIO (Just ps.handle))
+         (\tvsth -> atomically $ tryTakeTMVar tvsth >> putTMVar tvsth Nothing)
+   Z.untilLeft $ liftIO $ Ex.mask \restore -> Ex.bracket
+      (atomically $ takeTMVar tvsth)
+      ( -- "try" because the release might have filled `tvsth` with Nothing
+        void . atomically . tryPutTMVar tvsth
+      )
+      \case
+         Just sth ->
+            restore (bool S.step S.stepNoCB st.unsafeFFI sth) >>= \case
+               S.Row -> restore do
+                  either Ex.throwM (pure . Right)
+                     =<< runRowDecoder
+                        (traverse (S.column ps.handle) . flip Map.lookup ixs)
+                        st.decoder
+               S.Done -> do
+                  liftIO $ traverse_ R.release [k3, k2, k1, k0]
+                  pure $ Left ()
+         Nothing -> Ex.throwM $ resourceVanishedWithCallStack "Rows"

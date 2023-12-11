@@ -1,0 +1,57 @@
+cabal-version: 2.4
+name: Sqlime
+version: 0.0.1
+license: Apache-2.0
+license-file: LICENSE
+extra-source-files: README.md CHANGELOG.md
+author: Renzo Carbonara
+maintainer: renλren.zone
+copyright: Renzo Carbonara, 2023
+category: Databases
+build-type: Simple
+synopsis: High-level SQLite client.
+description: High-level SQLite client.
+homepage: https://github.com/k0001/hs-sqlime
+bug-reports: https://github.com/k0001/hs-sqlime/issues
+tested-with: GHC == 9.6.1
+
+common basic
+  default-language: GHC2021
+  ghc-options: -O2 -Wall
+  build-depends:
+    base == 4.*,
+  default-extensions:
+    BlockArguments
+    DeriveAnyClass
+    DerivingVia
+    DerivingStrategies
+    DuplicateRecordFields
+    LambdaCase
+    OverloadedRecordDot
+    OverloadedStrings
+    RecordWildCards
+
+library
+  import: basic
+  hs-source-dirs: lib
+  exposed-modules: Sqlime
+  other-modules:
+    Sqlime.Internal
+    Sqlime.Encoders
+    Sqlime.Decoders
+    Sqlime.Support
+  build-depends:
+    bytestring,
+    containers,
+    contravariant,
+    direct-sqlite,
+    kan-extensions,
+    profunctors,
+    resourcet,
+    safe-exceptions,
+    stm,
+    streaming,
+    template-haskell,
+    text,
+    time,
+    transformers,

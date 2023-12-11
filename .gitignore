@@ -1,0 +1,8 @@
+.*.sw[a-p]
+tmp/
+dist-newstyle/
+result
+result-*
+cabal.project.local
+*.prof
+*.eventlog
