@@ -39,7 +39,6 @@ library
     Sqlime.Internal
     Sqlime.Encoders
     Sqlime.Decoders
-    Sqlime.Support
   build-depends:
     bytestring,
     containers,
@@ -48,6 +47,7 @@ library
     kan-extensions,
     profunctors,
     resourcet,
+    resourcet-extra,
     safe-exceptions,
     stm,
     streaming,

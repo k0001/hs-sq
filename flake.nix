@@ -5,12 +5,15 @@
     flakety.url = "github:k0001/flakety";
     nixpkgs.follows = "flakety/nixpkgs";
     flake-parts.follows = "flakety/flake-parts";
+    hs_resourcet-extra.url = "github:k0001/hs-resourcet-extra";
+    hs_resourcet-extra.inputs.flakety.follows = "flakety";
   };
 
   outputs = inputs@{ ... }:
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       flake.overlays.default = inputs.nixpkgs.lib.composeManyExtensions [
         inputs.flakety.overlays.default
+        inputs.hs_resourcet-extra.overlays.default
         (final: prev:
           let
             hsLib = prev.haskell.lib;

@@ -74,6 +74,36 @@
         "type": "github"
       }
     },
+    "hs_resourcet-extra": {
+      "inputs": {
+        "flake-parts": [
+          "hs_resourcet-extra",
+          "flakety",
+          "flake-parts"
+        ],
+        "flakety": [
+          "flakety"
+        ],
+        "nixpkgs": [
+          "hs_resourcet-extra",
+          "flakety",
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1702392697,
+        "narHash": "sha256-ixF9z+1gwgQzPbYe2Xc4+SnO7Ie4IxRtHQ6OPqHa0wc=",
+        "owner": "k0001",
+        "repo": "hs-resourcet-extra",
+        "rev": "65076281b8bb5a789c6c9c510d5ae8b0b45f1651",
+        "type": "github"
+      },
+      "original": {
+        "owner": "k0001",
+        "repo": "hs-resourcet-extra",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1701539137,
@@ -115,6 +145,7 @@
           "flake-parts"
         ],
         "flakety": "flakety",
+        "hs_resourcet-extra": "hs_resourcet-extra",
         "nixpkgs": [
           "flakety",
           "nixpkgs"

@@ -15,6 +15,7 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.Resource qualified as R
+import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
 import Data.Bool
 import Data.Char qualified as Ch
@@ -31,12 +32,12 @@ import Data.Profunctor
 import Data.String
 import Data.Text qualified as T
 import Database.SQLite3 qualified as S
+import GHC.IO.Exception
 import GHC.Show
+import GHC.Stack
 import Language.Haskell.TH.Quote (QuasiQuoter (..))
 import Streaming qualified as Z
 import Streaming.Prelude qualified as Z
-
-import Sqlime.Support
 
 --------------------------------------------------------------------------------
 
@@ -287,7 +288,7 @@ data Connection = Connection
 acquireConnectionLock
    :: String -> Connection -> A.Acquire (Codensity IO S.Database)
 acquireConnectionLock desc conn = do
-   mkAcquire1
+   R.mkAcquire1
       ( Ex.catchAsync
          (takeMVar conn.lock)
          (\BEx.BlockedIndefinitelyOnMVar -> Ex.throwM ErrConnection_Deadlock)
@@ -315,7 +316,7 @@ acquireConnection
    -> A.Acquire Connection
 acquireConnection (ConnectionString t) flags vfs = do
    statements :: MVar (Map RawStatement PreparedStatement) <-
-      mkAcquire1 (newMVar mempty) \mv ->
+      R.mkAcquire1 (newMVar mempty) \mv ->
          takeMVar mv >>= traverse_ \ps ->
             Ex.catchAsync @_ @Ex.SomeException (S.finalize ps.handle) mempty
    -- We run all interactions with the database through a single background
@@ -325,7 +326,7 @@ acquireConnection (ConnectionString t) flags vfs = do
    mvDM :: MVar DatabaseMessage <- liftIO newEmptyMVar
    mvOpen :: MVar (Maybe Ex.SomeException) <- liftIO newEmptyMVar
    mvStart :: MVar () <- liftIO newEmptyMVar
-   _ <- flip mkAcquire1 killThread do
+   _ <- flip R.mkAcquire1 killThread do
       self <- myThreadId
       forkFinally
          (background (putMVar mvOpen) (takeMVar mvStart) (takeMVar mvDM))
@@ -340,7 +341,7 @@ acquireConnection (ConnectionString t) flags vfs = do
    -- we don't receive its async exceptions too early.
    liftIO $ putMVar mvStart ()
    lock :: MVar (Maybe (Codensity IO S.Database)) <-
-      mkAcquire1
+      R.mkAcquire1
          ( newMVar $ Just $ Codensity \act -> do
             mv <- newEmptyMVar
             putMVar mvDM $! DatabaseMessage act $ putMVar mv
@@ -388,12 +389,12 @@ acquireTransaction :: Connection -> A.Acquire Transaction
 acquireTransaction conn = do
    -- While the Transaction is active, it will hold an exclusive lock on `conn`.
    Codensity run' <- acquireConnectionLock "Connection" conn
-   mkAcquireType1 (run' (flip S.exec "BEGIN")) $ const \case
+   R.mkAcquireType1 (run' (flip S.exec "BEGIN")) $ const \case
       A.ReleaseEarly -> run' (flip S.exec "COMMIT")
       A.ReleaseNormal -> run' (flip S.exec "COMMIT")
       A.ReleaseExceptionWith _ -> run' (flip S.exec "ROLLBACK")
    lock :: MVar (Maybe (Codensity IO S.Database)) <-
-      mkAcquire1
+      R.mkAcquire1
          (newMVar $ Just $ Codensity run')
          (\mv -> takeMVar mv >> putMVar mv Nothing)
    pure $ Transaction Connection{statements = conn.statements, lock}
@@ -439,7 +440,7 @@ acquirePreparedStatement
    -> Connection
    -> A.Acquire PreparedStatement
 acquirePreparedStatement st conn = do
-   mkAcquire1
+   R.mkAcquire1
       ( modifyMVar conn.statements \m0 ->
          case mapPop st.raw m0 of
             (Just ps, m1) -> pure (m1, ps)
@@ -552,3 +553,15 @@ rowsStream st i (Transaction conn) = do
                   liftIO $ traverse_ R.release [k3, k2, k1, k0]
                   pure $ Left ()
          Nothing -> Ex.throwM $ resourceVanishedWithCallStack "Rows"
+
+--------------------------------------------------------------------------------
+
+resourceVanishedWithCallStack :: (HasCallStack) => String -> IOError
+resourceVanishedWithCallStack s =
+   (userError s)
+      { ioe_location = prettyCallStack (popCallStack callStack)
+      , ioe_type = ResourceVanished
+      }
+
+mapPop :: (Ord k) => k -> Map.Map k v -> (Maybe v, Map.Map k v)
+mapPop k m0 | (ml, yv, mr) <- Map.splitLookup k m0 = (yv, ml <> mr)
