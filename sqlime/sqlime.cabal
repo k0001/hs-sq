@@ -1,5 +1,5 @@
 cabal-version: 2.4
-name: Sqlime
+name: sqlime
 version: 0.0.1
 license: Apache-2.0
 license-file: LICENSE

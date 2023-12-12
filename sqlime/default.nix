@@ -4,7 +4,7 @@
 , transformers
 }:
 mkDerivation {
-  pname = "Sqlime";
+  pname = "sqlime";
   version = "0.0.1";
   src = ./.;
   libraryHaskellDepends = [
