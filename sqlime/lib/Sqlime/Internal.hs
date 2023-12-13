@@ -472,7 +472,7 @@ getStatementColumnNameIndexes st = do
                Map.alterF
                   ( \case
                      Nothing -> pure $ Just i
-                     Just _ -> Ex.throwM $ ErrStatementDuplicateColumnName n
+                     Just _ -> Ex.throwM $ ErrStatement_DuplicateColumnName n
                   )
                   n
                   m
@@ -485,7 +485,7 @@ getStatementColumnNameIndexes st = do
       (S.ColumnIndex <$> enumFromTo 0 (ncols - 1))
 
 data ErrStatement
-   = ErrStatementDuplicateColumnName Name
+   = ErrStatement_DuplicateColumnName Name
    deriving stock (Eq, Show)
    deriving anyclass (Ex.Exception)
 
