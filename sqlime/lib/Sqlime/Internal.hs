@@ -491,6 +491,41 @@ data ErrStatement
 
 --------------------------------------------------------------------------------
 
+data ErrRows
+   = ErrRows_TooFew
+   | ErrRows_TooMany
+   deriving stock (Eq, Show)
+   deriving anyclass (Ex.Exception)
+
+-- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
+row :: (MonadIO m) => Statement i o -> i -> Transaction -> m o
+row st i tx = liftIO do
+   rowMaybe st i tx >>= \case
+      Just o -> pure o
+      Nothing -> Ex.throwM ErrRows_TooFew
+
+-- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 1 row.
+rowMaybe :: (MonadIO m) => Statement i o -> i -> Transaction -> m (Maybe o)
+rowMaybe st i tx = liftIO $ R.runResourceT do
+   Z.next (rowsStream st i tx) >>= \case
+      Right (o, z1) ->
+         Z.next z1 >>= \case
+            Left () -> pure (Just o)
+            Right _ -> Ex.throwM ErrRows_TooMany
+      Left () -> pure Nothing
+
+-- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
+rowsNonEmpty
+   :: (MonadIO m)
+   => Statement i o
+   -> i
+   -> Transaction
+   -> m (Int64, NEL.NonEmpty o)
+rowsNonEmpty st i tx = liftIO do
+   rowsList st i tx >>= \case
+      (n, os) | Just nos <- NEL.nonEmpty os -> pure (n, nos)
+      _ -> Ex.throwM ErrRows_TooFew
+
 -- | Get the statement output rows as a list, together with its length.
 --
 -- Holds an exclusive lock on the database connection temporarily, while the

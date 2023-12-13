@@ -49,6 +49,9 @@ module Sqlime
    , Transaction
 
     -- * Rows
+   , row
+   , rowMaybe
+   , rowsNonEmpty
    , rowsList
    , rowsStream
 
@@ -69,6 +72,14 @@ module Sqlime
     -- ** Acquire
    , acquireConnection
    , acquireTransaction
+
+    -- * Errors
+   , ErrDecoder (..)
+   , ErrBinding (..)
+   , ErrRowDecoder (..)
+   , ErrConnection (..)
+   , ErrStatement (..)
+   , ErrRows (..)
 
     -- * Re-exports
    , S.SQLData (..)
