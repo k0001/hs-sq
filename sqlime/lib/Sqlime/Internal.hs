@@ -14,7 +14,7 @@ import Control.Monad.Codensity
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
-import Control.Monad.Trans.Resource qualified as R
+import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
 import Data.Bool
