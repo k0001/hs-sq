@@ -1,5 +1,6 @@
 module Sqlime.Decoders
    ( refineDecoder
+   , refineDecoderString
    , DefaultDecoder (..)
    , decodeMaybe
    , decodeEither
@@ -7,6 +8,7 @@ module Sqlime.Decoders
    ) where
 
 import Control.Applicative
+import Control.Exception.Safe qualified as Ex
 import Control.Monad
 import Data.Bifunctor
 import Data.Bits
@@ -17,14 +19,22 @@ import Data.List.NonEmpty qualified as NEL
 import Data.Text qualified as T
 import Data.Word
 import Database.SQLite3 qualified as S
+import GHC.Stack
 import Text.Read (readMaybe)
 
 import Sqlime.Internal
 
 --------------------------------------------------------------------------------
 
-refineDecoder :: (a -> Either String b) -> Decoder a -> Decoder b
-refineDecoder f da = Decoder (runDecoder da >=> first ErrDecoder_Fail . f)
+refineDecoderString
+   :: (HasCallStack) => (a -> Either String b) -> Decoder a -> Decoder b
+refineDecoderString f = refineDecoder \a ->
+   case f a of
+      Right b -> Right b
+      Left s -> first ErrDecoder_Fail (Ex.throwString s)
+
+refineDecoder :: (a -> Either ErrDecoder b) -> Decoder a -> Decoder b
+refineDecoder f da = Decoder (runDecoder da >=> f)
 
 --------------------------------------------------------------------------------
 -- Core decoders
@@ -98,10 +108,12 @@ instance DefaultDecoder Integer where
          | not (isNaN d || isInfinite d)
          , (i, 0) <- properFraction d ->
             Right i
-         | otherwise -> Left $ ErrDecoder_Fail "Not an integer"
+         | otherwise -> first ErrDecoder_Fail do
+            Ex.throwString "Not an integer"
       S.SQLText t
          | Just i <- readMaybe (T.unpack t) -> Right i
-         | otherwise -> Left $ ErrDecoder_Fail "Not an integer"
+         | otherwise -> first ErrDecoder_Fail do
+            Ex.throwString "Not an integer"
       _ ->
          Left $
             ErrDecoder_Type $
@@ -110,10 +122,11 @@ instance DefaultDecoder Integer where
 
 -- | 'S.IntegerColumn'.
 decodeSizedIntegral :: (Integral a, Bits a) => Decoder a
-decodeSizedIntegral =
-   refineDecoder
-      (maybe (Left "Integral overflow or underflow") Right . toIntegralSized)
-      (defaultDecoder @Integer)
+decodeSizedIntegral = do
+   i <- defaultDecoder @Integer
+   case toIntegralSized i of
+      Just a -> pure a
+      Nothing -> fail "Integral overflow or underflow"
 
 instance DefaultDecoder Int8 where
    defaultDecoder = decodeSizedIntegral

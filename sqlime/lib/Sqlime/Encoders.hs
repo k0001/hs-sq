@@ -1,5 +1,6 @@
 module Sqlime.Encoders
    ( refineEncoder
+   , refineEncoderString
    , DefaultEncoder (..)
    , encodeMaybe
    , encodeEither
@@ -7,6 +8,7 @@ module Sqlime.Encoders
    )
 where
 
+import Control.Exception.Safe qualified as Ex
 import Control.Monad
 import Data.Bits
 import Data.Bool
@@ -24,17 +26,22 @@ import Data.Time.Format.ISO8601 qualified as Time
 import Data.Word
 import Database.SQLite3 qualified as S
 import GHC.Float (float2Double)
+import GHC.Stack
 import Numeric.Natural
 
 import Sqlime.Internal
 
 --------------------------------------------------------------------------------
 
-refineEncoder :: (s -> Either String a) -> Encoder a -> Encoder s
+refineEncoderString
+   :: (HasCallStack) => (s -> Either String a) -> Encoder a -> Encoder s
+refineEncoderString f = refineEncoder (either Ex.throwString pure . f)
+
+refineEncoder :: (s -> Either Ex.SomeException a) -> Encoder a -> Encoder s
 refineEncoder f ea = Encoder (f >=> runEncoder ea)
 
 class DefaultEncoder a where
-   defaultEncoder :: Encoder a
+   defaultEncoder :: (HasCallStack) => Encoder a
 
 --------------------------------------------------------------------------------
 -- Core encoders
@@ -117,12 +124,10 @@ instance DefaultEncoder Natural where
    defaultEncoder = encodeSizedIntegral
 
 -- | 'S.IntegerColumn'.
-encodeSizedIntegral :: (Integral a, Bits a) => Encoder a
+encodeSizedIntegral :: (Integral a, Bits a, HasCallStack) => Encoder a
 encodeSizedIntegral =
-   refineEncoder
-      ( maybe
-         (Left "Integral overflows or underflows 64-bit signed integer")
-         Right
+   refineEncoderString
+      ( note "Integral overflows or underflows 64-bit signed integer"
          . toIntegralSized
       )
       (defaultEncoder @Int64)

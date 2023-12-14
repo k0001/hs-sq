@@ -4,6 +4,7 @@ module Sqlime
    ( -- * Value encoder
     Encoder
    , refineEncoder
+   , refineEncoderString
    , DefaultEncoder (..)
    , encodeMaybe
    , encodeEither
@@ -12,6 +13,7 @@ module Sqlime
     -- * Value decoders
    , Decoder
    , refineDecoder
+   , refineDecoderString
    , DefaultDecoder (..)
    , decodeMaybe
    , decodeEither

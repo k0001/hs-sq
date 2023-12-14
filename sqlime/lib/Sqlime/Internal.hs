@@ -60,12 +60,12 @@ instance Monoid Null where
 -- reduce that boilerplate, we allow the 'Encoder' to fail.
 --
 -- See 'encodeSizedIntegral' as a motivating example.
-newtype Encoder a = Encoder (a -> Either String S.SQLData)
+newtype Encoder a = Encoder (a -> Either Ex.SomeException S.SQLData)
    deriving
       (Contravariant)
-      via Op (Either String S.SQLData)
+      via Op (Either Ex.SomeException S.SQLData)
 
-runEncoder :: Encoder a -> a -> Either String S.SQLData
+runEncoder :: Encoder a -> a -> Either Ex.SomeException S.SQLData
 runEncoder = coerce
 
 --------------------------------------------------------------------------------
@@ -73,8 +73,8 @@ runEncoder = coerce
 data ErrDecoder
    = -- | The list mentions the supported types.
      ErrDecoder_Type (NEL.NonEmpty S.ColumnType)
-   | ErrDecoder_Fail String
-   deriving stock (Eq, Show)
+   | ErrDecoder_Fail Ex.SomeException
+   deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
 newtype Decoder a
@@ -95,8 +95,11 @@ instance (Monoid a) => Monoid (Decoder a) where
 instance (Semigroup a) => Semigroup (Decoder a) where
    (<>) = liftA2 (<>)
 
+instance Ex.MonadThrow Decoder where
+   throwM = Decoder . const . Left . ErrDecoder_Fail . Ex.toException
+
 instance MonadFail Decoder where
-   fail = Decoder . const . Left . ErrDecoder_Fail
+   fail = Ex.throwString
 
 -- | Leftmost result on success, rightmost error on failure.
 instance Alternative Decoder where
@@ -161,7 +164,7 @@ renderBindingName (BindingName x xs) =
 --------------------------------------------------------------------------------
 
 newtype Binder a
-   = Binder (a -> Map.Map BindingName (Either String S.SQLData))
+   = Binder (a -> Map.Map BindingName (Either Ex.SomeException S.SQLData))
    deriving newtype
       ( Semigroup
         -- ^ Left-biased.
@@ -169,14 +172,14 @@ newtype Binder a
       )
    deriving
       (Contravariant, Divisible, Decidable)
-      via Op (Map.Map BindingName (Either String S.SQLData))
+      via Op (Map.Map BindingName (Either Ex.SomeException S.SQLData))
 
 runBinder
-   :: Binder a -> a -> Map.Map BindingName (Either String S.SQLData)
+   :: Binder a -> a -> Map.Map BindingName (Either Ex.SomeException S.SQLData)
 runBinder = coerce
 
-data ErrBinding = ErrBinding BindingName String
-   deriving stock (Eq, Show)
+data ErrBinding = ErrBinding BindingName Ex.SomeException
+   deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
 encode :: Name -> Encoder i -> Binder i
@@ -199,14 +202,14 @@ bindStatement st ii i = do
 
 data RowDecoder a
    = RowDecoder_Pure a
-   | RowDecoder_Fail String
+   | RowDecoder_Fail Ex.SomeException
    | RowDecoder_Decode Name (Decoder (RowDecoder a))
 
 data ErrRowDecoder
    = ErrRowDecoder_ColumnValue Name ErrDecoder
    | ErrRowDecoder_ColumnMissing Name
-   | ErrRowDecoder_Fail String
-   deriving stock (Eq, Show)
+   | ErrRowDecoder_Fail Ex.SomeException
+   deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
 decode :: Name -> Decoder a -> RowDecoder a
@@ -239,10 +242,13 @@ instance Monad RowDecoder where
    RowDecoder_Decode n vda >>= k =
       RowDecoder_Decode n (fmap (>>= k) vda)
    RowDecoder_Pure a >>= k = k a
-   RowDecoder_Fail e >>= _ = fail e
+   RowDecoder_Fail e >>= _ = RowDecoder_Fail e
+
+instance Ex.MonadThrow RowDecoder where
+   throwM = RowDecoder_Fail . Ex.toException
 
 instance MonadFail RowDecoder where
-   fail = RowDecoder_Fail
+   fail = Ex.throwString
 
 instance (Semigroup a) => Semigroup (RowDecoder a) where
    (<>) = liftA2 (<>)
@@ -600,3 +606,8 @@ resourceVanishedWithCallStack s =
 
 mapPop :: (Ord k) => k -> Map.Map k v -> (Maybe v, Map.Map k v)
 mapPop k m0 | (ml, yv, mr) <- Map.splitLookup k m0 = (yv, ml <> mr)
+
+note :: a -> Maybe b -> Either a b
+note a = \case
+   Just b -> Right b
+   Nothing -> Left a
