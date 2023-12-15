@@ -163,8 +163,8 @@ renderBindingName (BindingName x xs) =
 
 --------------------------------------------------------------------------------
 
-newtype Input a
-   = Input (a -> Map.Map BindingName (Either Ex.SomeException S.SQLData))
+newtype Input i
+   = Input (i -> Map.Map BindingName (Either Ex.SomeException S.SQLData))
    deriving newtype
       ( Semigroup
         -- ^ Left-biased.
@@ -175,7 +175,7 @@ newtype Input a
       via Op (Map.Map BindingName (Either Ex.SomeException S.SQLData))
 
 runInput
-   :: Input a -> a -> Map.Map BindingName (Either Ex.SomeException S.SQLData)
+   :: Input i -> i -> Map.Map BindingName (Either Ex.SomeException S.SQLData)
 runInput = coerce
 
 data ErrBinding = ErrBinding BindingName Ex.SomeException
@@ -185,9 +185,9 @@ data ErrBinding = ErrBinding BindingName Ex.SomeException
 encode :: Name -> Encoder i -> Input i
 encode n e = Input (Map.singleton (bindingName n) . runEncoder e)
 
-push :: Name -> (s -> a) -> Input a -> Input s
-push n s2a ba = Input \s ->
-   Map.mapKeysMonotonic (consBindingName n) (runInput ba (s2a s))
+push :: Name -> Input i -> Input i
+push n ba = Input \s ->
+   Map.mapKeysMonotonic (consBindingName n) (runInput ba s)
 
 bindStatement :: S.Statement -> Input i -> i -> IO ()
 bindStatement st ii i = do
@@ -200,10 +200,10 @@ bindStatement st ii i = do
 
 --------------------------------------------------------------------------------
 
-data Output a
-   = Output_Pure a
+data Output o
+   = Output_Pure o
    | Output_Fail Ex.SomeException
-   | Output_Decode Name (Decoder (Output a))
+   | Output_Decode Name (Decoder (Output o))
 
 data ErrOutput
    = ErrOutput_ColumnValue Name ErrDecoder
@@ -212,15 +212,14 @@ data ErrOutput
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
-decode :: Name -> Decoder a -> Output a
+decode :: Name -> Decoder o -> Output o
 decode n vda = Output_Decode n (Output_Pure <$> vda)
 
 runOutput
-   :: forall m a
-    . (Monad m)
+   :: (Monad m)
    => (Name -> m (Maybe S.SQLData))
-   -> Output a
-   -> m (Either ErrOutput a)
+   -> Output o
+   -> m (Either ErrOutput o)
 runOutput f = \case
    Output_Decode n vda -> do
       f n >>= \case
@@ -250,10 +249,10 @@ instance Ex.MonadThrow Output where
 instance MonadFail Output where
    fail = Ex.throwString
 
-instance (Semigroup a) => Semigroup (Output a) where
+instance (Semigroup o) => Semigroup (Output o) where
    (<>) = liftA2 (<>)
 
-instance (Monoid a) => Monoid (Output a) where
+instance (Monoid o) => Monoid (Output o) where
    mempty = pure mempty
 
 --------------------------------------------------------------------------------
