@@ -40,6 +40,7 @@ library
     Sqlime.Encoders
     Sqlime.Decoders
   build-depends:
+    binary,
     bytestring,
     containers,
     contravariant,

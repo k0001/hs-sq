@@ -5,11 +5,13 @@ module Sqlime.Encoders
    , encodeMaybe
    , encodeEither
    , encodeSizedIntegral
+   , encodeBinary
    )
 where
 
 import Control.Exception.Safe qualified as Ex
 import Control.Monad
+import Data.Binary.Put qualified as Bin
 import Data.Bits
 import Data.Bool
 import Data.ByteString qualified as B
@@ -162,3 +164,8 @@ instance DefaultEncoder Time.UTCTime where
       contramap
          (Time.iso8601Show . Time.utcToZonedTime Time.utc)
          defaultEncoder
+
+--------------------------------------------------------------------------------
+
+encodeBinary :: (a -> Bin.Put) -> Encoder a
+encodeBinary f = contramap (Bin.runPut . f) defaultEncoder

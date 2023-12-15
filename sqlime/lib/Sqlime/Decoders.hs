@@ -5,15 +5,18 @@ module Sqlime.Decoders
    , decodeMaybe
    , decodeEither
    , decodeSizedIntegral
+   , decodeBinary
    ) where
 
 import Control.Applicative
 import Control.Exception.Safe qualified as Ex
 import Control.Monad
 import Data.Bifunctor
+import Data.Binary.Get qualified as Bin
 import Data.Bits
 import Data.ByteString qualified as B
 import Data.ByteString.Builder.Prim.Internal (caseWordSize_32_64)
+import Data.ByteString.Lazy qualified as BL
 import Data.Int
 import Data.List.NonEmpty qualified as NEL
 import Data.Text qualified as T
@@ -73,6 +76,9 @@ instance DefaultDecoder Null where
 
 --------------------------------------------------------------------------------
 -- Extra decoders
+
+instance DefaultDecoder BL.ByteString where
+   defaultDecoder = BL.fromStrict <$> defaultDecoder
 
 -- | See 'decodeMaybe'.
 instance (DefaultDecoder a) => DefaultDecoder (Maybe a) where
@@ -149,3 +155,14 @@ instance DefaultDecoder Int where
       caseWordSize_32_64
          decodeSizedIntegral
          (fromIntegral <$> defaultDecoder @Int64)
+
+--------------------------------------------------------------------------------
+
+decodeBinary :: Bin.Get a -> Decoder a
+decodeBinary ga =
+   refineDecoderString
+      ( \bl -> case Bin.runGetOrFail ga bl of
+         Right (_, _, a) -> Right a
+         Left (_, _, s) -> Left s
+      )
+      defaultDecoder
