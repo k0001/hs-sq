@@ -19,27 +19,27 @@ module Sqlime
    , decodeEither
    , decodeSizedIntegral
 
-    -- * Value binders
-   , Binder
+    -- * Statement
+   , Statement
+   , statement
+
+    -- * Statement input
+   , Input
    , encode
    , push
 
-    -- * Row decoders
-   , RowDecoder
+    -- * Statement output
+   , Output
    , decode
-
-    -- * Names
-   , Name
-   , name
-   , unName
 
     -- * Raw statements
    , RawStatement (..)
    , rawStatement
 
-    -- * Statement
-   , Statement
-   , statement
+    -- * Names
+   , Name
+   , name
+   , unName
 
     -- * ConnectionString
    , ConnectionString (..)
@@ -78,7 +78,7 @@ module Sqlime
     -- * Errors
    , ErrDecoder (..)
    , ErrBinding (..)
-   , ErrRowDecoder (..)
+   , ErrOutput (..)
    , ErrConnection (..)
    , ErrStatement (..)
    , ErrRows (..)

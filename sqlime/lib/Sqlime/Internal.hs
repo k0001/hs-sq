@@ -163,8 +163,8 @@ renderBindingName (BindingName x xs) =
 
 --------------------------------------------------------------------------------
 
-newtype Binder a
-   = Binder (a -> Map.Map BindingName (Either Ex.SomeException S.SQLData))
+newtype Input a
+   = Input (a -> Map.Map BindingName (Either Ex.SomeException S.SQLData))
    deriving newtype
       ( Semigroup
         -- ^ Left-biased.
@@ -174,86 +174,86 @@ newtype Binder a
       (Contravariant, Divisible, Decidable)
       via Op (Map.Map BindingName (Either Ex.SomeException S.SQLData))
 
-runBinder
-   :: Binder a -> a -> Map.Map BindingName (Either Ex.SomeException S.SQLData)
-runBinder = coerce
+runInput
+   :: Input a -> a -> Map.Map BindingName (Either Ex.SomeException S.SQLData)
+runInput = coerce
 
 data ErrBinding = ErrBinding BindingName Ex.SomeException
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
-encode :: Name -> Encoder i -> Binder i
-encode n e = Binder (Map.singleton (bindingName n) . runEncoder e)
+encode :: Name -> Encoder i -> Input i
+encode n e = Input (Map.singleton (bindingName n) . runEncoder e)
 
-push :: Name -> (s -> a) -> Binder a -> Binder s
-push n s2a ba = Binder \s ->
-   Map.mapKeysMonotonic (consBindingName n) (runBinder ba (s2a s))
+push :: Name -> (s -> a) -> Input a -> Input s
+push n s2a ba = Input \s ->
+   Map.mapKeysMonotonic (consBindingName n) (runInput ba (s2a s))
 
-bindStatement :: S.Statement -> Binder i -> i -> IO ()
+bindStatement :: S.Statement -> Input i -> i -> IO ()
 bindStatement st ii i = do
    !m <-
       Map.mapKeysMonotonic renderBindingName
          <$> Map.traverseWithKey
             (\bn -> either (Ex.throwM . ErrBinding bn) pure)
-            (runBinder ii i)
+            (runInput ii i)
    S.bindNamed st $! Map.toAscList m
 
 --------------------------------------------------------------------------------
 
-data RowDecoder a
-   = RowDecoder_Pure a
-   | RowDecoder_Fail Ex.SomeException
-   | RowDecoder_Decode Name (Decoder (RowDecoder a))
+data Output a
+   = Output_Pure a
+   | Output_Fail Ex.SomeException
+   | Output_Decode Name (Decoder (Output a))
 
-data ErrRowDecoder
-   = ErrRowDecoder_ColumnValue Name ErrDecoder
-   | ErrRowDecoder_ColumnMissing Name
-   | ErrRowDecoder_Fail Ex.SomeException
+data ErrOutput
+   = ErrOutput_ColumnValue Name ErrDecoder
+   | ErrOutput_ColumnMissing Name
+   | ErrOutput_Fail Ex.SomeException
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
-decode :: Name -> Decoder a -> RowDecoder a
-decode n vda = RowDecoder_Decode n (RowDecoder_Pure <$> vda)
+decode :: Name -> Decoder a -> Output a
+decode n vda = Output_Decode n (Output_Pure <$> vda)
 
-runRowDecoder
+runOutput
    :: forall m a
     . (Monad m)
    => (Name -> m (Maybe S.SQLData))
-   -> RowDecoder a
-   -> m (Either ErrRowDecoder a)
-runRowDecoder f = \case
-   RowDecoder_Decode n vda -> do
+   -> Output a
+   -> m (Either ErrOutput a)
+runOutput f = \case
+   Output_Decode n vda -> do
       f n >>= \case
          Just s -> case runDecoder vda s of
-            Right d -> runRowDecoder f d
-            Left e -> pure $ Left $ ErrRowDecoder_ColumnValue n e
-         Nothing -> pure $ Left $ ErrRowDecoder_ColumnMissing n
-   RowDecoder_Pure a -> pure $ Right a
-   RowDecoder_Fail e -> pure $ Left $ ErrRowDecoder_Fail e
+            Right d -> runOutput f d
+            Left e -> pure $ Left $ ErrOutput_ColumnValue n e
+         Nothing -> pure $ Left $ ErrOutput_ColumnMissing n
+   Output_Pure a -> pure $ Right a
+   Output_Fail e -> pure $ Left $ ErrOutput_Fail e
 
-instance Functor RowDecoder where
+instance Functor Output where
    fmap = liftA
 
-instance Applicative RowDecoder where
-   pure = RowDecoder_Pure
+instance Applicative Output where
+   pure = Output_Pure
    liftA2 = liftM2
 
-instance Monad RowDecoder where
-   RowDecoder_Decode n vda >>= k =
-      RowDecoder_Decode n (fmap (>>= k) vda)
-   RowDecoder_Pure a >>= k = k a
-   RowDecoder_Fail e >>= _ = RowDecoder_Fail e
+instance Monad Output where
+   Output_Decode n vda >>= k =
+      Output_Decode n (fmap (>>= k) vda)
+   Output_Pure a >>= k = k a
+   Output_Fail e >>= _ = Output_Fail e
 
-instance Ex.MonadThrow RowDecoder where
-   throwM = RowDecoder_Fail . Ex.toException
+instance Ex.MonadThrow Output where
+   throwM = Output_Fail . Ex.toException
 
-instance MonadFail RowDecoder where
+instance MonadFail Output where
    fail = Ex.throwString
 
-instance (Semigroup a) => Semigroup (RowDecoder a) where
+instance (Semigroup a) => Semigroup (Output a) where
    (<>) = liftA2 (<>)
 
-instance (Monoid a) => Monoid (RowDecoder a) where
+instance (Monoid a) => Monoid (Output a) where
    mempty = pure mempty
 
 --------------------------------------------------------------------------------
@@ -411,8 +411,8 @@ acquireTransaction conn = do
 -- @o@ values as output.
 data Statement i o = Statement
    { unsafeFFI :: Bool
-   , binder :: Binder i
-   , decoder :: RowDecoder o
+   , input :: Input i
+   , output :: Output o
    , raw :: RawStatement
    }
 
@@ -425,14 +425,14 @@ instance Show (Statement i o) where
             . shows s.unsafeFFI
             . showString "}"
 
-statement :: Binder i -> RowDecoder o -> RawStatement -> Statement i o
-statement binder decoder raw = Statement{unsafeFFI = False, ..}
+statement :: Input i -> Output o -> RawStatement -> Statement i o
+statement input output raw = Statement{unsafeFFI = False, ..}
 
 instance Functor (Statement i) where
    fmap = rmap
 
 instance Profunctor Statement where
-   dimap f g s = s{binder = f >$< s.binder, decoder = g <$> s.decoder}
+   dimap f g s = s{input = f >$< s.input, output = g <$> s.output}
 
 --------------------------------------------------------------------------------
 
@@ -567,7 +567,7 @@ rowsStream st i (Transaction conn) = do
    (k0, ps) <- lift $ A.allocateAcquire $ acquirePreparedStatement st conn
    k1 <- lift do
       R.allocate_
-         (bindStatement ps.handle st.binder i)
+         (bindStatement ps.handle st.input i)
          (S.clearBindings ps.handle)
    (k2, _) <- lift do
       A.allocateAcquire $ acquireConnectionLock "Transaction" conn
@@ -587,9 +587,9 @@ rowsStream st i (Transaction conn) = do
             restore (bool S.step S.stepNoCB st.unsafeFFI sth) >>= \case
                S.Row -> restore do
                   either Ex.throwM (pure . Right)
-                     =<< runRowDecoder
+                     =<< runOutput
                         (traverse (S.column ps.handle) . flip Map.lookup ixs)
-                        st.decoder
+                        st.output
                S.Done -> do
                   liftIO $ traverse_ R.release [k3, k2, k1, k0]
                   pure $ Left ()
