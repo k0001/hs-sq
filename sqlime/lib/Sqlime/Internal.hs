@@ -16,6 +16,7 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
 import Control.Monad.Trans.Resource.Extra qualified as R
+import Control.Retry qualified as Retry
 import Data.Acquire qualified as A
 import Data.Bool
 import Data.Char qualified as Ch
@@ -395,9 +396,13 @@ acquireTransaction conn = do
    -- While the Transaction is active, it will hold an exclusive lock on `conn`.
    Codensity run' <- acquireConnectionLock "Connection" conn
    R.mkAcquireType1 (run' (flip S.exec "BEGIN")) $ const \case
-      A.ReleaseEarly -> run' (flip S.exec "COMMIT")
-      A.ReleaseNormal -> run' (flip S.exec "COMMIT")
       A.ReleaseExceptionWith _ -> run' (flip S.exec "ROLLBACK")
+      _ ->
+         -- We keep retrying to commit if the database is busy.
+         Retry.recovering
+            (Retry.constantDelay 50_000) -- 50 ms
+            [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
+            (\_ -> run' (flip S.exec "COMMIT"))
    lock :: MVar (Maybe (Codensity IO S.Database)) <-
       R.mkAcquire1
          (newMVar $ Just $ Codensity run')

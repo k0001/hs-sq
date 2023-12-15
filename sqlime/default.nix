@@ -1,6 +1,6 @@
 { mkDerivation, base, binary, bytestring, containers, contravariant
 , direct-sqlite, kan-extensions, lib, profunctors, resourcet
-, resourcet-extra, safe-exceptions, stm, streaming
+, resourcet-extra, retry, safe-exceptions, stm, streaming
 , template-haskell, text, time, transformers
 }:
 mkDerivation {
@@ -9,7 +9,7 @@ mkDerivation {
   src = ./.;
   libraryHaskellDepends = [
     base binary bytestring containers contravariant direct-sqlite
-    kan-extensions profunctors resourcet resourcet-extra
+    kan-extensions profunctors resourcet resourcet-extra retry
     safe-exceptions stm streaming template-haskell text time
     transformers
   ];

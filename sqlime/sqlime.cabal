@@ -49,6 +49,7 @@ library
     profunctors,
     resourcet,
     resourcet-extra,
+    retry,
     safe-exceptions,
     stm,
     streaming,
