@@ -72,8 +72,8 @@ runEncoder = coerce
 --------------------------------------------------------------------------------
 
 data ErrDecoder
-   = -- | The list mentions the supported types.
-     ErrDecoder_Type (NEL.NonEmpty S.ColumnType)
+   = -- | Got, expected.
+     ErrDecoder_Type S.ColumnType [S.ColumnType]
    | ErrDecoder_Fail Ex.SomeException
    deriving stock (Show)
    deriving anyclass (Ex.Exception)

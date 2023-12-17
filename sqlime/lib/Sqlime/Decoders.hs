@@ -18,7 +18,6 @@ import Data.ByteString qualified as B
 import Data.ByteString.Builder.Prim.Internal (caseWordSize_32_64)
 import Data.ByteString.Lazy qualified as BL
 import Data.Int
-import Data.List.NonEmpty qualified as NEL
 import Data.Text qualified as T
 import Data.Word
 import Database.SQLite3 qualified as S
@@ -26,6 +25,16 @@ import GHC.Stack
 import Text.Read (readMaybe)
 
 import Sqlime.Internal
+
+--------------------------------------------------------------------------------
+
+sqlDataColumnType :: S.SQLData -> S.ColumnType
+sqlDataColumnType = \case
+   S.SQLInteger _ -> S.IntegerColumn
+   S.SQLFloat _ -> S.FloatColumn
+   S.SQLText _ -> S.TextColumn
+   S.SQLBlob _ -> S.BlobColumn
+   S.SQLNull -> S.NullColumn
 
 --------------------------------------------------------------------------------
 
@@ -52,27 +61,27 @@ instance DefaultDecoder S.SQLData where
 instance DefaultDecoder Int64 where
    defaultDecoder = Decoder \case
       S.SQLInteger x -> Right x
-      _ -> Left $ ErrDecoder_Type $ pure S.IntegerColumn
+      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.IntegerColumn]
 
 instance DefaultDecoder Double where
    defaultDecoder = Decoder \case
       S.SQLFloat x -> Right x
-      _ -> Left $ ErrDecoder_Type $ pure S.FloatColumn
+      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.FloatColumn]
 
 instance DefaultDecoder T.Text where
    defaultDecoder = Decoder \case
       S.SQLText x -> Right x
-      _ -> Left $ ErrDecoder_Type $ pure S.TextColumn
+      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.TextColumn]
 
 instance DefaultDecoder B.ByteString where
    defaultDecoder = Decoder \case
       S.SQLBlob x -> Right x
-      _ -> Left $ ErrDecoder_Type $ pure S.BlobColumn
+      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.BlobColumn]
 
 instance DefaultDecoder Null where
    defaultDecoder = Decoder \case
       S.SQLNull -> Right Null
-      _ -> Left $ ErrDecoder_Type $ pure S.NullColumn
+      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.NullColumn]
 
 --------------------------------------------------------------------------------
 -- Extra decoders
@@ -120,11 +129,8 @@ instance DefaultDecoder Integer where
          | Just i <- readMaybe (T.unpack t) -> Right i
          | otherwise -> first ErrDecoder_Fail do
             Ex.throwString "Not an integer"
-      _ ->
-         Left $
-            ErrDecoder_Type $
-               NEL.fromList
-                  [S.IntegerColumn, S.FloatColumn, S.TextColumn]
+      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) do
+         [S.IntegerColumn, S.FloatColumn, S.TextColumn]
 
 -- | 'S.IntegerColumn'.
 decodeSizedIntegral :: (Integral a, Bits a) => Decoder a
