@@ -284,7 +284,7 @@ data ErrConnection = ErrConnection_Deadlock
 -- | A database connection handle. It's safe to try to use this 'Connection'
 -- concurrently.
 data Connection = Connection
-   { lock :: MVar (Maybe (Codensity IO S.Database))
+   { lock :: TMVar (Maybe (Codensity IO S.Database))
    -- ^ Lock is so that Connection users don't step on each other.
    -- For example, `Transaction` will hold this lock while active.
    -- 'Nothing' if is not possible to access the database from here anymore.
@@ -294,20 +294,24 @@ data Connection = Connection
 acquireConnectionLock
    :: String -> Connection -> A.Acquire (Codensity IO S.Database)
 acquireConnectionLock desc conn = do
-   R.mkAcquire1
-      ( Ex.catchAsync
-         (takeMVar conn.lock)
-         (\BEx.BlockedIndefinitelyOnMVar -> Ex.throwM ErrConnection_Deadlock)
-         >>= \case
-            Just x -> pure x
-            Nothing -> do
-               putMVar conn.lock Nothing
-               Ex.throwM $ resourceVanishedWithCallStack desc
-      )
-      ( -- "try" because the 'Connection' release might have filled
-        -- `conn.lock` with Nothing
-        void . tryPutMVar conn.lock . Just
-      )
+   liftIO $ putStrLn "acquireConnectionLock/1"
+   x <-
+      R.mkAcquire1
+         ( atomically do
+            takeTMVar conn.lock >>= \case
+               Just x -> pure x
+               Nothing -> Ex.throwM $ resourceVanishedWithCallStack desc
+         )
+         ( \c -> atomically do
+            mplus
+               (putTMVar conn.lock (Just c))
+               ( readTMVar conn.lock >>= \case
+                  Nothing -> pure () -- Nothing to do, already released.
+                  Just _ -> Ex.throwString "acquireConnectionLock/3"
+               )
+         )
+   liftIO $ putStrLn "acquireConnectionLock/2"
+   pure x
 
 data DatabaseMessage
    = forall x.
@@ -346,14 +350,14 @@ acquireConnection (ConnectionString t) flags vfs = do
    -- Only now we allow the background thread to start working, so that
    -- we don't receive its async exceptions too early.
    liftIO $ putMVar mvStart ()
-   lock :: MVar (Maybe (Codensity IO S.Database)) <-
+   lock :: TMVar (Maybe (Codensity IO S.Database)) <-
       R.mkAcquire1
-         ( newMVar $ Just $ Codensity \act -> do
+         ( newTMVarIO $ Just $ Codensity \act -> do
             mv <- newEmptyMVar
             putMVar mvDM $! DatabaseMessage act $ putMVar mv
             takeMVar mv >>= either Ex.throwM pure
          )
-         (\mv -> takeMVar mv >> putMVar mv Nothing)
+         (\tmv -> atomically $ takeTMVar tmv >> putTMVar tmv Nothing)
    pure Connection{statements, lock}
   where
    background
@@ -402,11 +406,14 @@ acquireTransaction conn = do
          Retry.recovering
             (Retry.constantDelay 50_000) -- 50 ms
             [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
-            (\_ -> run' (flip S.exec "COMMIT"))
-   lock :: MVar (Maybe (Codensity IO S.Database)) <-
+            ( \_ -> do
+               run' (flip S.exec "COMMIT")
+                  `Ex.onException` putStrLn "commit failed"
+            )
+   lock :: TMVar (Maybe (Codensity IO S.Database)) <-
       R.mkAcquire1
-         (newMVar $ Just $ Codensity run')
-         (\mv -> takeMVar mv >> putMVar mv Nothing)
+         (newTMVarIO $ Just $ Codensity run')
+         (\tmv -> atomically $ takeTMVar tmv >> putTMVar tmv Nothing)
    pure $ Transaction Connection{statements = conn.statements, lock}
 
 --------------------------------------------------------------------------------
@@ -450,7 +457,8 @@ acquirePreparedStatement
    -> Connection
    -> A.Acquire PreparedStatement
 acquirePreparedStatement st conn = do
-   R.mkAcquire1
+   liftIO $ putStrLn "acquirePreparedStatement/1"
+   ps <- R.mkAcquire1
       ( modifyMVar conn.statements \m0 ->
          case mapPop st.raw m0 of
             (Just ps, m1) -> pure (m1, ps)
@@ -466,6 +474,8 @@ acquirePreparedStatement st conn = do
       \ps -> flip Ex.onException (S.finalize ps.handle) do
          S.reset ps.handle
          modifyMVar_ conn.statements (pure . Map.insert st.raw ps)
+   liftIO $ putStrLn "acquirePreparedStatement/2"
+   pure ps
 
 --------------------------------------------------------------------------------
 
@@ -576,28 +586,35 @@ rowsStream st i (Transaction conn) = do
    (k2, _) <- lift do
       A.allocateAcquire $ acquireConnectionLock "Transaction" conn
    ixs <- liftIO $ getStatementColumnNameIndexes ps.handle
-   -- tvsth: to make sure ps.handle is not used after release.
-   (k3, tvsth) <- lift do
+   -- tmv: to make sure ps.handle is not used after release.
+   (k3, tmv :: TMVar (Maybe S.Statement)) <- lift do
       R.allocate
          (newTMVarIO (Just ps.handle))
-         (\tvsth -> atomically $ tryTakeTMVar tvsth >> putTMVar tvsth Nothing)
+         (\tmv -> atomically $ tryTakeTMVar tmv >> putTMVar tmv Nothing)
    Z.untilLeft $ liftIO $ Ex.mask \restore -> Ex.bracket
-      (atomically $ takeTMVar tvsth)
-      ( -- "try" because the release might have filled `tvsth` with Nothing
-        void . atomically . tryPutTMVar tvsth
+      ( atomically do
+         takeTMVar tmv >>= \case
+            Just sth -> pure sth
+            Nothing -> Ex.throwM $ resourceVanishedWithCallStack "Rows"
       )
-      \case
-         Just sth ->
-            restore (bool S.step S.stepNoCB st.unsafeFFI sth) >>= \case
-               S.Row -> restore do
-                  either Ex.throwM (pure . Right)
-                     =<< runOutput
-                        (traverse (S.column ps.handle) . flip Map.lookup ixs)
-                        st.output
-               S.Done -> do
-                  liftIO $ traverse_ R.release [k3, k2, k1, k0]
-                  pure $ Left ()
-         Nothing -> Ex.throwM $ resourceVanishedWithCallStack "Rows"
+      ( \sth -> atomically do
+         mplus
+            (putTMVar tmv (Just sth))
+            ( readTMVar tmv >>= \case
+               Nothing -> pure () -- Nothing to do, already released.
+               Just _ -> Ex.throwString "rowsStream/1"
+            )
+      )
+      \sth ->
+         restore (bool S.step S.stepNoCB st.unsafeFFI sth) >>= \case
+            S.Row -> restore do
+               either Ex.throwM (pure . Right)
+                  =<< runOutput
+                     (traverse (S.column ps.handle) . flip Map.lookup ixs)
+                     st.output
+            S.Done -> do
+               liftIO $ traverse_ R.release [k3, k2, k1, k0]
+               pure $ Left ()
 
 --------------------------------------------------------------------------------
 
