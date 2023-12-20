@@ -40,12 +40,12 @@ library
     Sqlime.Encoders
     Sqlime.Decoders
   build-depends:
+    async,
     binary,
     bytestring,
     containers,
     contravariant,
     direct-sqlite,
-    kan-extensions,
     profunctors,
     resourcet,
     resourcet-extra,
