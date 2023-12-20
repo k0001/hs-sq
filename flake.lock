@@ -91,11 +91,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1702398719,
-        "narHash": "sha256-v9nEG/yxSMbLVU/66Maa4+0Z4/v/Co9GXTT5Z79+bbk=",
+        "lastModified": 1703093248,
+        "narHash": "sha256-ywKGjX6zUAR6jpt6fsTmIDp/nhsiq8d7PE/Z9qV2GJE=",
         "owner": "k0001",
         "repo": "hs-resourcet-extra",
-        "rev": "9b4e712ee880f31774e4f2fc1faf0c72d2216af0",
+        "rev": "6ddce8de29eddcea8c85d3dd5452b1f8ee4e4c14",
         "type": "github"
       },
       "original": {

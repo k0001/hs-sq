@@ -617,7 +617,7 @@ rowsStream st i tx = do
          (atomically . void . tryPutTMVar typs . Just)
          \ps ->
             restore (bool S.stepNoCB S.step ps.safeFFI ps.handle) >>= \case
-               S.Done -> Left <$> R.release k
+               S.Done -> Left <$> R.releaseType k A.ReleaseEarly
                S.Row ->
                   either Ex.throwM (pure . Right) =<< restore do
                      runOutput
