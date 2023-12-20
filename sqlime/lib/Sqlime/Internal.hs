@@ -306,8 +306,8 @@ acquireConnection
    -> A.Acquire Connection
 acquireConnection cs flags vfs = do
    x <- acquireExclusiveConnection cs flags vfs
-   xconn <- R.mkAcquire1 (newTMVarIO (Just x)) \tmv ->
-      void $ atomically $ swapTMVar tmv Nothing
+   xconn <- R.mkAcquire1 (newTMVarIO (Just x)) \t ->
+      atomically $ tryTakeTMVar t >> putTMVar t Nothing
    pure Connection{xconn, id = x.id}
 
 --------------------------------------------------------------------------------
@@ -366,8 +366,7 @@ acquireExclusiveConnection (ConnectionString t) flags vfs = do
    abackground :: Async.Async () <-
       R.mkAcquire1
          (Async.async (background (takeMVar dms)))
-         \aa -> do
-            Async.uninterruptibleCancel aa
+         Async.uninterruptibleCancel
    liftIO $ Async.link abackground
    pure $
       ExclusiveConnection
@@ -434,8 +433,8 @@ acquireTransaction c = do
             (Retry.constantDelay 50_000) -- 50 ms
             [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
             (\_ -> run xc (flip S.exec "COMMIT"))
-   xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \tmv ->
-      void $ atomically $ swapTMVar tmv Nothing
+   xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
+      atomically $ tryTakeTMVar t >> putTMVar t Nothing
    tid <- newTransactionId
    pure $ Transaction{id = tid, connection = Connection{id = c.id, xconn}}
 
@@ -606,7 +605,7 @@ rowsStream st i tx = do
       R.mkAcquire1 (bindStatement ps.handle st.input i) \() -> do
          S.clearBindings ps.handle
       typs <- R.mkAcquire1 (newTMVarIO (Just ps)) \typs -> do
-         void $ atomically $ tryTakeTMVar typs >> putTMVar typs Nothing
+         atomically $ tryTakeTMVar typs >> putTMVar typs Nothing
       pure (ixs, typs)
    Z.untilLeft $ liftIO $ Ex.mask \restore ->
       Ex.bracket
