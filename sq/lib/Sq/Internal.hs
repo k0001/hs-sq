@@ -3,7 +3,7 @@
 {-# LANGUAGE NoFieldSelectors #-}
 {-# OPTIONS_HADDOCK hide #-}
 
-module Sqlime.Internal where
+module Sq.Internal where
 
 import Control.Applicative
 import Control.Concurrent

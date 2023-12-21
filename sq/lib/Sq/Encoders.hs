@@ -1,4 +1,4 @@
-module Sqlime.Encoders
+module Sq.Encoders
    ( refineEncoder
    , refineEncoderString
    , DefaultEncoder (..)
@@ -31,7 +31,7 @@ import GHC.Float (float2Double)
 import GHC.Stack
 import Numeric.Natural
 
-import Sqlime.Internal
+import Sq.Internal
 
 --------------------------------------------------------------------------------
 

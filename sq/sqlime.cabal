@@ -1,5 +1,5 @@
 cabal-version: 2.4
-name: sqlime
+name: sq
 version: 0.0.1
 license: Apache-2.0
 license-file: LICENSE
@@ -11,8 +11,8 @@ category: Databases
 build-type: Simple
 synopsis: High-level SQLite client.
 description: High-level SQLite client.
-homepage: https://github.com/k0001/hs-sqlime
-bug-reports: https://github.com/k0001/hs-sqlime/issues
+homepage: https://github.com/k0001/hs-sq
+bug-reports: https://github.com/k0001/hs-sq/issues
 tested-with: GHC == 9.6.1
 
 common basic
@@ -35,11 +35,11 @@ library
   import: basic
   hs-source-dirs: lib
   exposed-modules:
-    Sqlime
-    Sqlime.Internal
+    Sq
+    Sq.Internal
   other-modules:
-    Sqlime.Encoders
-    Sqlime.Decoders
+    Sq.Encoders
+    Sq.Decoders
   build-depends:
     async,
     binary,

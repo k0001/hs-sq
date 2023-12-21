@@ -1,6 +1,6 @@
 {-# LANGUAGE QuasiQuotes #-}
 
-module Sqlime
+module Sq
    ( -- * Value encoder
     Encoder
    , refineEncoder
@@ -97,9 +97,9 @@ import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
 import Database.SQLite3 qualified as S
 
-import Sqlime.Decoders
-import Sqlime.Encoders
-import Sqlime.Internal
+import Sq.Decoders
+import Sq.Encoders
+import Sq.Internal
 
 --------------------------------------------------------------------------------
 -- ResourceT

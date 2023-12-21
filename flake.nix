@@ -1,5 +1,5 @@
 {
-  description = "Haskell 'sqlime' library";
+  description = "Haskell 'sq' library";
 
   inputs = {
     flakety.url = "github:k0001/flakety";
@@ -26,7 +26,7 @@
                 (prev.haskell.packageOverrides or (_: _: { })) (hself: hsuper:
                   prev.lib.optionalAttrs
                   (prev.lib.versionAtLeast hsuper.ghc.version "9.6") {
-                    sqlime = hself.callPackage ./sqlime { };
+                    sq = hself.callPackage ./sq { };
                     direct-sqlite = hsLib.addExtraLibrary
                       (hsLib.enableCabalFlag hsuper.direct-sqlite "systemlib")
                       final.sqlite;
@@ -41,16 +41,16 @@
           overlays = [ inputs.self.overlays.default ];
         };
         packages = {
-          sqlime__ghc98 = pkgs.haskell.packages.ghc98.sqlime;
-          sqlime__ghc96 = pkgs.haskell.packages.ghc96.sqlime;
+          sq__ghc98 = pkgs.haskell.packages.ghc98.sq;
+          sq__ghc96 = pkgs.haskell.packages.ghc96.sq;
           default = pkgs.releaseTools.aggregate {
             name = "every output from this flake";
             constituents = [
-              config.packages.sqlime__ghc98
-              config.packages.sqlime__ghc98.doc
+              config.packages.sq__ghc98
+              config.packages.sq__ghc98.doc
               config.devShells.ghc98
-              config.packages.sqlime__ghc96
-              config.packages.sqlime__ghc96.doc
+              config.packages.sq__ghc96
+              config.packages.sq__ghc96.doc
               config.devShells.ghc96
             ];
           };
@@ -58,7 +58,7 @@
         devShells = let
           mkShellFor = ghc:
             ghc.shellFor {
-              packages = p: [ p.sqlime ];
+              packages = p: [ p.sq ];
               withHoogle = true;
               nativeBuildInputs =
                 [ pkgs.cabal-install pkgs.cabal2nix pkgs.ghcid pkgs.sqlite ];

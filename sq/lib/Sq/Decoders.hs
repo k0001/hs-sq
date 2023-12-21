@@ -1,4 +1,4 @@
-module Sqlime.Decoders
+module Sq.Decoders
    ( refineDecoder
    , refineDecoderString
    , DefaultDecoder (..)
@@ -24,7 +24,7 @@ import Database.SQLite3 qualified as S
 import GHC.Stack
 import Text.Read (readMaybe)
 
-import Sqlime.Internal
+import Sq.Internal
 
 --------------------------------------------------------------------------------
 
