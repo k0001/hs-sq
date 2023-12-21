@@ -34,9 +34,10 @@ common basic
 library
   import: basic
   hs-source-dirs: lib
-  exposed-modules: Sqlime
-  other-modules:
+  exposed-modules:
+    Sqlime
     Sqlime.Internal
+  other-modules:
     Sqlime.Encoders
     Sqlime.Decoders
   build-depends:
