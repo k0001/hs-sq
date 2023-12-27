@@ -34,6 +34,7 @@ import Data.Profunctor
 import Data.String
 import Data.Text qualified as T
 import Database.SQLite3 qualified as S
+import GHC.IO (unsafeUnmask)
 import GHC.IO.Exception
 import GHC.Show
 import GHC.Stack
@@ -386,7 +387,7 @@ acquireExclusiveConnection (ConnectionString t) flags vfs = do
          (\h -> Ex.uninterruptibleMask_ (S.interrupt h) `Ex.finally` S.close h)
          \h -> forever do
             DatabaseMessage act res <- next
-            Ex.try (act h) >>= res
+            Ex.try (unsafeUnmask (act h)) >>= res
 
 --------------------------------------------------------------------------------
 
