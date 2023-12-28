@@ -9,6 +9,8 @@ module Sq
    , encodeMaybe
    , encodeEither
    , encodeSizedIntegral
+   , encodeBinary
+   , encodeShow
 
     -- * Value decoders
    , Decoder
@@ -18,6 +20,8 @@ module Sq
    , decodeMaybe
    , decodeEither
    , decodeSizedIntegral
+   , decodeBinary
+   , decodeRead
 
     -- * Statement
    , Statement
