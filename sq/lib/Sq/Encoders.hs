@@ -6,6 +6,7 @@ module Sq.Encoders
    , encodeEither
    , encodeSizedIntegral
    , encodeBinary
+   , encodeShow
    )
 where
 
@@ -169,3 +170,7 @@ instance DefaultEncoder Time.UTCTime where
 
 encodeBinary :: (a -> Bin.Put) -> Encoder a
 encodeBinary f = contramap (Bin.runPut . f) defaultEncoder
+
+encodeShow :: Show a => Encoder a
+encodeShow = show >$< defaultEncoder
+

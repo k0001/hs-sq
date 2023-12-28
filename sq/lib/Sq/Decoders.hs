@@ -6,6 +6,7 @@ module Sq.Decoders
    , decodeEither
    , decodeSizedIntegral
    , decodeBinary
+   , decodeRead
    ) where
 
 import Control.Applicative
@@ -22,7 +23,7 @@ import Data.Text qualified as T
 import Data.Word
 import Database.SQLite3 qualified as S
 import GHC.Stack
-import Text.Read (readMaybe)
+import Text.Read (readEither, readMaybe)
 
 import Sq.Internal
 
@@ -72,6 +73,9 @@ instance DefaultDecoder T.Text where
    defaultDecoder = Decoder \case
       S.SQLText x -> Right x
       x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.TextColumn]
+
+instance DefaultDecoder String where
+   defaultDecoder = T.unpack <$> defaultDecoder
 
 instance DefaultDecoder B.ByteString where
    defaultDecoder = Decoder \case
@@ -172,3 +176,6 @@ decodeBinary ga =
          Left (_, _, s) -> Left s
       )
       defaultDecoder
+
+decodeRead :: (Read a) => Decoder a
+decodeRead = refineDecoderString readEither defaultDecoder
