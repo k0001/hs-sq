@@ -55,23 +55,23 @@ instance DefaultEncoder S.SQLData where
 
 -- | 'S.TextColumn'.
 instance DefaultEncoder T.Text where
-   defaultEncoder = Encoder (Right . S.SQLText)
+   defaultEncoder = S.SQLText >$< defaultEncoder
 
 -- | 'S.IntegerColumn'.
 instance DefaultEncoder Int64 where
-   defaultEncoder = Encoder (Right . S.SQLInteger)
+   defaultEncoder = S.SQLInteger >$< defaultEncoder
 
 -- | 'S.FloatColumn'.
 instance DefaultEncoder Double where
-   defaultEncoder = Encoder (Right . S.SQLFloat)
+   defaultEncoder = S.SQLFloat >$< defaultEncoder
 
 -- | 'S.BlobColumn'.
 instance DefaultEncoder B.ByteString where
-   defaultEncoder = Encoder (Right . S.SQLBlob)
+   defaultEncoder = S.SQLBlob >$< defaultEncoder
 
 -- | 'S.NullColumn'.
 instance DefaultEncoder Null where
-   defaultEncoder = Encoder \_ -> Right S.SQLNull
+   defaultEncoder = const S.SQLNull >$< defaultEncoder
 
 --------------------------------------------------------------------------------
 -- Extra encoders
@@ -171,6 +171,5 @@ instance DefaultEncoder Time.UTCTime where
 encodeBinary :: (a -> Bin.Put) -> Encoder a
 encodeBinary f = contramap (Bin.runPut . f) defaultEncoder
 
-encodeShow :: Show a => Encoder a
+encodeShow :: (Show a) => Encoder a
 encodeShow = show >$< defaultEncoder
-

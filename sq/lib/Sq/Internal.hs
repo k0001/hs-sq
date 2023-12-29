@@ -432,7 +432,7 @@ acquireTransaction c = do
       _ ->
          -- We keep retrying to commit if the database is busy.
          Retry.recovering
-            (Retry.constantDelay 50_000) -- 50 ms
+            (Retry.limitRetries 20 <> Retry.constantDelay 50_000 {- 50 ms -})
             [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
             (\_ -> run xc (flip S.exec "COMMIT"))
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->

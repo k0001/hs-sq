@@ -74,9 +74,6 @@ instance DefaultDecoder T.Text where
       S.SQLText x -> Right x
       x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.TextColumn]
 
-instance DefaultDecoder String where
-   defaultDecoder = T.unpack <$> defaultDecoder
-
 instance DefaultDecoder B.ByteString where
    defaultDecoder = Decoder \case
       S.SQLBlob x -> Right x
@@ -89,6 +86,9 @@ instance DefaultDecoder Null where
 
 --------------------------------------------------------------------------------
 -- Extra decoders
+
+instance DefaultDecoder String where
+   defaultDecoder = T.unpack <$> defaultDecoder
 
 instance DefaultDecoder BL.ByteString where
    defaultDecoder = BL.fromStrict <$> defaultDecoder
