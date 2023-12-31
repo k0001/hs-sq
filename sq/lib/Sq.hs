@@ -65,19 +65,23 @@ module Sq
 
     -- ** MonadMask
    , withConnection
-   , withTransaction
+   , withRollbackingTransaction
+   , withCommittingTransaction
 
     -- ** MonadUnliftIO
    , uithConnection
-   , uithTransaction
+   , uithRollbackingTransaction
+   , uithCommittingTransaction
 
     -- ** MonadResource
    , newConnection
-   , newTransaction
+   , newRollbackingTransaction
+   , newCommittingTransaction
 
     -- ** Acquire
    , acquireConnection
-   , acquireTransaction
+   , acquireRollbackingTransaction
+   , acquireCommittingTransaction
 
     -- * Errors
    , ErrDecoder (..)
@@ -116,13 +120,22 @@ newConnection
    -> m (R.ReleaseKey, Connection)
 newConnection cs flags vfs = A.allocateAcquire $ acquireConnection cs flags vfs
 
--- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
--- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
-newTransaction
+-- | @BEGIN@s a database transaction which will be @ROLLBACK@ed when released.
+newRollbackingTransaction
    :: (R.MonadResource m)
    => Connection
    -> m (R.ReleaseKey, Transaction)
-newTransaction conn = A.allocateAcquire $ acquireTransaction conn
+newRollbackingTransaction conn =
+   A.allocateAcquire $ acquireCommittingTransaction conn
+
+-- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
+-- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
+newCommittingTransaction
+   :: (R.MonadResource m)
+   => Connection
+   -> m (R.ReleaseKey, Transaction)
+newCommittingTransaction conn =
+   A.allocateAcquire $ acquireCommittingTransaction conn
 
 --------------------------------------------------------------------------------
 -- MonadMask
@@ -136,14 +149,24 @@ withConnection
    -> m a
 withConnection cs flags vfs = R.withAcquire $ acquireConnection cs flags vfs
 
--- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
--- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
-withTransaction
+-- | @BEGIN@s a database transaction which will be @ROLLBACK@ed when released.
+withRollbackingTransaction
    :: (Ex.MonadMask m, MonadIO m)
    => Connection
    -> (Transaction -> m a)
    -> m a
-withTransaction conn = R.withAcquire $ acquireTransaction conn
+withRollbackingTransaction conn =
+   R.withAcquire $ acquireRollbackingTransaction conn
+
+-- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
+-- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
+withCommittingTransaction
+   :: (Ex.MonadMask m, MonadIO m)
+   => Connection
+   -> (Transaction -> m a)
+   -> m a
+withCommittingTransaction conn =
+   R.withAcquire $ acquireCommittingTransaction conn
 
 --------------------------------------------------------------------------------
 -- MonadUnliftIO
@@ -157,11 +180,19 @@ uithConnection
    -> m a
 uithConnection cs flags vfs = A.with $ acquireConnection cs flags vfs
 
--- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
--- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
-uithTransaction
+-- | @BEGIN@s a database transaction which will be @ROLLBACK@ed when released.
+uithRollbackingTransaction
    :: (R.MonadUnliftIO m)
    => Connection
    -> (Transaction -> m a)
    -> m a
-uithTransaction conn = A.with $ acquireTransaction conn
+uithRollbackingTransaction conn = A.with $ acquireRollbackingTransaction conn
+
+-- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
+-- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
+uithCommittingTransaction
+   :: (R.MonadUnliftIO m)
+   => Connection
+   -> (Transaction -> m a)
+   -> m a
+uithCommittingTransaction conn = A.with $ acquireCommittingTransaction conn

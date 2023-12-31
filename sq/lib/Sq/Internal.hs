@@ -424,13 +424,13 @@ data Transaction = Transaction
 
 -- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
 -- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
-acquireTransaction :: Connection -> A.Acquire Transaction
-acquireTransaction c = do
+acquireCommittingTransaction :: Connection -> A.Acquire Transaction
+acquireCommittingTransaction c = do
    xc <- acquireExclusiveConnectionLock c
    R.mkAcquireType1 (run xc (flip S.exec "BEGIN")) $ const \case
       A.ReleaseExceptionWith _ -> run xc (flip S.exec "ROLLBACK")
       _ ->
-         -- We keep retrying to commit if the database is busy.
+         -- We retry to commit for some time if the database is busy.
          Retry.recovering
             ( mappend
                (Retry.constantDelay 50_000 {- 50 ms single retry -})
@@ -438,6 +438,17 @@ acquireTransaction c = do
             )
             [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
             (\_ -> run xc (flip S.exec "COMMIT"))
+   xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
+      atomically $ tryTakeTMVar t >> putTMVar t Nothing
+   tid <- newTransactionId
+   pure $ Transaction{id = tid, connection = Connection{id = c.id, xconn}}
+
+-- | @BEGIN@s a database transaction which will be @ROLLBACK@ed when released.
+acquireRollbackingTransaction :: Connection -> A.Acquire Transaction
+acquireRollbackingTransaction c = do
+   xc <- acquireExclusiveConnectionLock c
+   R.mkAcquire1 (run xc (flip S.exec "BEGIN")) \() ->
+      run xc (flip S.exec "ROLLBACK")
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
    tid <- newTransactionId
