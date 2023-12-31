@@ -48,6 +48,7 @@ library
     contravariant,
     direct-sqlite,
     profunctors,
+    resource-pool,
     resourcet,
     resourcet-extra,
     retry,
