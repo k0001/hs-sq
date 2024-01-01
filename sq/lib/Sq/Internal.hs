@@ -345,10 +345,10 @@ instance Show ExclusiveConnection where
             . showString ", ...}"
 
 run :: (MonadIO m) => ExclusiveConnection -> (S.Database -> IO x) -> m x
-run ExclusiveConnection{run = r} k = liftIO \db -> r (retrySqlBusy (k db))
+run ExclusiveConnection{run = r} k = liftIO $ r (retrySqlBusy . k)
 
 retrySqlBusy :: IO a -> IO a
-retrySqlBusy ioa =
+retrySqlBusy = \ioa ->
    Retry.recovering
       ( mappend
          (Retry.constantDelay 50_000 {- 50 ms single retry -})
