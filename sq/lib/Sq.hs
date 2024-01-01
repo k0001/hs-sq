@@ -145,7 +145,7 @@ newConnection = A.allocateAcquire . acquireConnection
 newRollbackingTransaction
    :: (R.MonadResource m) => Connection -> m (R.ReleaseKey, Transaction)
 newRollbackingTransaction =
-   A.allocateAcquire . acquireCommittingTransaction
+   A.allocateAcquire . acquireRollbackingTransaction
 
 -- | @BEGIN@s a database transaction. If released with 'A.ReleaseExceptionWith',
 -- then the transaction is @ROLLBACK@ed. Otherwise, it is @COMMIT@ed.
