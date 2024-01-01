@@ -42,7 +42,6 @@ import Language.Haskell.TH.Quote (QuasiQuoter (..))
 import Numeric.Natural
 import Streaming qualified as Z
 import Streaming.Prelude qualified as Z
-import System.IO qualified as IO
 import System.IO.Unsafe
 import Prelude hiding (log)
 
@@ -307,39 +306,6 @@ instance Show Settings where
             . showString ", vfs = "
             . shows x.vfs
             . showString ", ...}"
-
-defaultSettingsReadOnly :: T.Text -> Settings
-defaultSettingsReadOnly database =
-   Settings
-      { database
-      , flags = [S.SQLOpenReadOnly, S.SQLOpenWAL, S.SQLOpenFullMutex]
-      , vfs = S.SQLVFSDefault
-      , log = \_ _ _ -> pure ()
-      }
-
-defaultSettingsReadWrite :: T.Text -> Settings
-defaultSettingsReadWrite database =
-   Settings
-      { database
-      , flags =
-         [ S.SQLOpenReadWrite
-         , S.SQLOpenCreate
-         , S.SQLOpenWAL
-         , S.SQLOpenFullMutex
-         ]
-      , vfs = S.SQLVFSDefault
-      , log = \_ _ _ -> pure ()
-      }
-
-defaultLogStderr :: ConnectionId -> Maybe TransactionId -> String -> IO ()
-defaultLogStderr c = \yt m ->
-   IO.hPutStrLn IO.stderr $
-      mconcat $
-         mconcat
-            [ ["connection=", show c, " "]
-            , maybe [] (\t -> ["transaction=", show t, " "]) yt
-            , [m]
-            ]
 
 --------------------------------------------------------------------------------
 

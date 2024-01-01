@@ -56,9 +56,11 @@ module Sq
 
     -- * Connection
    , Connection
+   , ConnectionId (..)
 
     -- * Transaction
    , Transaction
+   , TransactionId (..)
 
     -- * Rows
    , row
@@ -119,7 +121,9 @@ import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
 import Data.Acquire.Internal qualified as A
 import Data.Pool qualified as P
+import Data.Text qualified as T
 import Database.SQLite3 qualified as S
+import System.IO qualified as IO
 
 import Sq.Decoders
 import Sq.Encoders
@@ -234,3 +238,38 @@ acquirePoolConnection (Pool p) = fmap (\(A.Allocated c _, _) -> c) do
          A.ReleaseExceptionWith _ ->
             rel t `Ex.finally` P.destroyResource p lp a
          _ -> P.putResource lp a
+
+--------------------------------------------------------------------------------
+
+defaultSettingsReadOnly :: T.Text -> Settings
+defaultSettingsReadOnly database =
+   Settings
+      { database
+      , flags = [S.SQLOpenReadOnly, S.SQLOpenWAL, S.SQLOpenFullMutex]
+      , vfs = S.SQLVFSDefault
+      , log = \_ _ _ -> pure ()
+      }
+
+defaultSettingsReadWrite :: T.Text -> Settings
+defaultSettingsReadWrite database =
+   Settings
+      { database
+      , flags =
+         [ S.SQLOpenReadWrite
+         , S.SQLOpenCreate
+         , S.SQLOpenWAL
+         , S.SQLOpenFullMutex
+         ]
+      , vfs = S.SQLVFSDefault
+      , log = \_ _ _ -> pure ()
+      }
+
+defaultLogStderr :: ConnectionId -> Maybe TransactionId -> String -> IO ()
+defaultLogStderr c = \yt m ->
+   IO.hPutStrLn IO.stderr $
+      mconcat $
+         mconcat
+            [ ["connection=", show c, " "]
+            , maybe [] (\t -> ["transaction=", show t, " "]) yt
+            , [m]
+            ]
