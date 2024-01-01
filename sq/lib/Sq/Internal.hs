@@ -42,7 +42,9 @@ import Language.Haskell.TH.Quote (QuasiQuoter (..))
 import Numeric.Natural
 import Streaming qualified as Z
 import Streaming.Prelude qualified as Z
+import System.IO qualified as IO
 import System.IO.Unsafe
+import Prelude hiding (log)
 
 --------------------------------------------------------------------------------
 
@@ -262,14 +264,6 @@ instance (Monoid o) => Monoid (Output o) where
 
 --------------------------------------------------------------------------------
 
-newtype ConnectionString = ConnectionString T.Text
-   deriving newtype (Eq, Ord, Show, IsString)
-
-unConnectionString :: ConnectionString -> T.Text
-unConnectionString = coerce
-
---------------------------------------------------------------------------------
-
 newtype RawStatement = RawStatement T.Text
    deriving newtype (Eq, Ord, Show, IsString)
 
@@ -287,12 +281,71 @@ rawStatement =
 
 --------------------------------------------------------------------------------
 
-data ErrConnection = ErrConnection_Deadlock
-   deriving stock (Eq, Show)
-   deriving anyclass (Ex.Exception)
+data Settings = Settings
+   { database :: T.Text
+   , flags :: [S.SQLOpenFlag]
+   , vfs :: S.SQLVFS
+   , log :: ConnectionId -> Maybe TransactionId -> String -> IO ()
+   }
+
+log
+   :: (MonadIO m)
+   => Settings
+   -> ConnectionId
+   -> Maybe TransactionId
+   -> String
+   -> m ()
+log s cid ytid msg = liftIO $ Ex.catchAny (s.log cid ytid msg) mempty
+
+instance Show Settings where
+   showsPrec n x =
+      showParen (n >= appPrec1) $
+         showString "Settings {database = "
+            . shows x.database
+            . showString ", flags = "
+            . shows x.flags
+            . showString ", vfs = "
+            . shows x.vfs
+            . showString ", ...}"
+
+defaultSettingsReadOnly :: T.Text -> Settings
+defaultSettingsReadOnly database =
+   Settings
+      { database
+      , flags = [S.SQLOpenReadOnly, S.SQLOpenWAL, S.SQLOpenFullMutex]
+      , vfs = S.SQLVFSDefault
+      , log = \_ _ _ -> pure ()
+      }
+
+defaultSettingsReadWrite :: T.Text -> Settings
+defaultSettingsReadWrite database =
+   Settings
+      { database
+      , flags =
+         [ S.SQLOpenReadWrite
+         , S.SQLOpenCreate
+         , S.SQLOpenWAL
+         , S.SQLOpenFullMutex
+         ]
+      , vfs = S.SQLVFSDefault
+      , log = \_ _ _ -> pure ()
+      }
+
+defaultLogStderr :: ConnectionId -> Maybe TransactionId -> String -> IO ()
+defaultLogStderr c = \yt m ->
+   IO.hPutStrLn IO.stderr $
+      mconcat $
+         mconcat
+            [ ["connection=", show c, " "]
+            , maybe [] (\t -> ["transaction=", show t, " "]) yt
+            , [m]
+            ]
+
+--------------------------------------------------------------------------------
 
 data Connection = Connection
    { id :: ConnectionId
+   , log :: Maybe TransactionId -> String -> IO ()
    , xconn :: TMVar (Maybe ExclusiveConnection)
    }
 
@@ -301,16 +354,12 @@ instance Show Connection where
       showParen (n >= appPrec1) $
          showString "Connection {id = " . shows c.id . showString ", ...}"
 
-acquireConnection
-   :: ConnectionString
-   -> [S.SQLOpenFlag]
-   -> S.SQLVFS
-   -> A.Acquire Connection
-acquireConnection cs flags vfs = do
-   x <- acquireExclusiveConnection cs flags vfs
+acquireConnection :: Settings -> A.Acquire Connection
+acquireConnection s = do
+   x <- acquireExclusiveConnection s
    xconn <- R.mkAcquire1 (newTMVarIO (Just x)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   pure Connection{xconn, id = x.id}
+   pure Connection{xconn, id = x.id, log = s.log x.id}
 
 --------------------------------------------------------------------------------
 
@@ -328,7 +377,7 @@ run ExclusiveConnection{run = r} = liftIO . r
 instance Show ExclusiveConnection where
    showsPrec n c =
       showParen (n >= appPrec1) $
-         showString "Exclusive Connection {id = "
+         showString "ExclusiveConnection {id = "
             . shows c.id
             . showString ", ...}"
 
@@ -353,12 +402,8 @@ data DatabaseMessage
       (S.Database -> IO x)
       (Either Ex.SomeException x -> IO ())
 
-acquireExclusiveConnection
-   :: ConnectionString
-   -> [S.SQLOpenFlag]
-   -> S.SQLVFS
-   -> A.Acquire ExclusiveConnection
-acquireExclusiveConnection (ConnectionString t) flags vfs = do
+acquireExclusiveConnection :: Settings -> A.Acquire ExclusiveConnection
+acquireExclusiveConnection s = do
    cid :: ConnectionId <- newConnectionId
    statements :: IORef (Map RawStatement PreparedStatement) <-
       R.mkAcquire1 (newIORef mempty) \r ->
@@ -383,7 +428,7 @@ acquireExclusiveConnection (ConnectionString t) flags vfs = do
    background :: forall x. IO DatabaseMessage -> IO x
    background next =
       Ex.bracket
-         (S.open2 t flags vfs)
+         (S.open2 s.database s.flags s.vfs)
          (\h -> Ex.uninterruptibleMask_ (S.interrupt h) `Ex.finally` S.close h)
          \h -> forever do
             DatabaseMessage act res <- next
@@ -399,13 +444,13 @@ newUnique :: (MonadIO m) => m Natural
 newUnique = liftIO $ atomicModifyIORef' iorefUnique \n -> (n + 1, n)
 
 newtype TransactionId = TransactionId Natural
-   deriving (Eq, Ord, Show)
+   deriving newtype (Eq, Ord, Show)
 
 newTransactionId :: (MonadIO m) => m TransactionId
 newTransactionId = TransactionId <$> newUnique
 
 newtype ConnectionId = ConnectionId Natural
-   deriving (Eq, Ord, Show)
+   deriving newtype (Eq, Ord, Show)
 
 newConnectionId :: (MonadIO m) => m ConnectionId
 newConnectionId = ConnectionId <$> newUnique
@@ -419,6 +464,7 @@ newConnectionId = ConnectionId <$> newUnique
 -- underlying 'Connection'.
 data Transaction = Transaction
    { id :: TransactionId
+   , log :: String -> IO ()
    , connection :: Connection
    }
 
@@ -427,32 +473,55 @@ data Transaction = Transaction
 acquireCommittingTransaction :: Connection -> A.Acquire Transaction
 acquireCommittingTransaction c = do
    xc <- acquireExclusiveConnectionLock c
-   R.mkAcquireType1 (run xc (flip S.exec "BEGIN")) $ const \case
-      A.ReleaseExceptionWith _ -> run xc (flip S.exec "ROLLBACK")
-      _ ->
-         -- We retry to commit for some time if the database is busy.
-         Retry.recovering
-            ( mappend
-               (Retry.constantDelay 50_000 {- 50 ms single retry -})
-               (Retry.limitRetries (20 * 10 {- 10 sec total -}))
-            )
-            [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
-            (\_ -> run xc (flip S.exec "COMMIT"))
+   tid <- newTransactionId
+   let tlog = c.log (Just tid)
+   R.mkAcquireType1
+      (run xc (flip S.exec "BEGIN") <* tlog "BEGIN")
+      ( const \case
+         A.ReleaseExceptionWith e -> do
+            run xc (flip S.exec "ROLLBACK")
+            tlog ("ROLLBACK (" <> show e <> ")")
+         _ ->
+            -- We retry to commit for some time if the database is busy.
+            Retry.recovering
+               ( mappend
+                  (Retry.constantDelay 50_000 {- 50 ms single retry -})
+                  (Retry.limitRetries (20 * 10 {- 10 sec total -}))
+               )
+               [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
+               (\_ -> run xc (flip S.exec "COMMIT") <* tlog "commit")
+      )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   tid <- newTransactionId
-   pure $ Transaction{id = tid, connection = Connection{id = c.id, xconn}}
+   pure $
+      Transaction
+         { log = tlog
+         , id = tid
+         , connection = Connection{id = c.id, log = c.log, xconn}
+         }
 
 -- | @BEGIN@s a database transaction which will be @ROLLBACK@ed when released.
 acquireRollbackingTransaction :: Connection -> A.Acquire Transaction
 acquireRollbackingTransaction c = do
    xc <- acquireExclusiveConnectionLock c
-   R.mkAcquire1 (run xc (flip S.exec "BEGIN")) \() ->
-      run xc (flip S.exec "ROLLBACK")
+   tid <- newTransactionId
+   let tlog = c.log (Just tid)
+   R.mkAcquireType1
+      (run xc (flip S.exec "BEGIN") <* tlog "BEGIN")
+      ( const \case
+         A.ReleaseExceptionWith e -> do
+            run xc (flip S.exec "ROLLBACK")
+            tlog ("ROLLBACK (" <> show e <> ")")
+         _ -> run xc (flip S.exec "ROLLBACK")
+      )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   tid <- newTransactionId
-   pure $ Transaction{id = tid, connection = Connection{id = c.id, xconn}}
+   pure $
+      Transaction
+         { log = tlog
+         , id = tid
+         , connection = Connection{id = c.id, log = c.log, xconn}
+         }
 
 --------------------------------------------------------------------------------
 
