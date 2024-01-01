@@ -455,7 +455,7 @@ acquireCommittingTransaction c = do
                   (Retry.limitRetries (20 * 10 {- 10 sec total -}))
                )
                [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
-               (\_ -> run xc (flip S.exec "COMMIT") <* tlog "commit")
+               (\_ -> run xc (flip S.exec "COMMIT") <* tlog "COMMIT")
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
@@ -538,7 +538,15 @@ acquirePreparedStatement st xconn =
          case yps of
             Just ps -> pure ps
             Nothing -> do
-               sth <- run xconn $ flip S.prepare (unRawStatement st.raw)
+               -- We retry to prepare for some time if the database is busy.
+               sth <-
+                  Retry.recovering
+                     ( mappend
+                        (Retry.constantDelay 50_000 {- 50 ms single retry -})
+                        (Retry.limitRetries (20 * 10 {- 10 sec total -}))
+                     )
+                     [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
+                     (\_ -> run xconn $ flip S.prepare (unRawStatement st.raw))
                let ps = PreparedStatement sth st.safeFFI
                atomicModifyIORef' xconn.statements \m ->
                   (Map.insert st.raw ps m, ps)
