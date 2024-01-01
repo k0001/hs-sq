@@ -345,7 +345,7 @@ instance Show ExclusiveConnection where
             . showString ", ...}"
 
 run :: (MonadIO m) => ExclusiveConnection -> (S.Database -> IO x) -> m x
-run ExclusiveConnection{run = r} k = liftIO $ r (retrySqlBusy . k)
+run ExclusiveConnection{run = r} = liftIO . r
 
 retrySqlBusy :: IO a -> IO a
 retrySqlBusy = \ioa ->
@@ -406,9 +406,11 @@ acquireExclusiveConnection s = do
       Ex.bracket
          (S.open2 s.database s.flags s.vfs)
          (\h -> Ex.uninterruptibleMask_ (S.interrupt h) `Ex.finally` S.close h)
-         \h -> forever do
-            DatabaseMessage act res <- next
-            Ex.try (unsafeUnmask (act h)) >>= res
+         \h -> do
+            S.exec h "PRAGMA busy_timeout=30000" -- 30 seconds
+            forever do
+               DatabaseMessage act res <- next
+               Ex.try (unsafeUnmask (act h)) >>= res
 
 --------------------------------------------------------------------------------
 
@@ -554,7 +556,8 @@ acquirePreparedStatement st xconn =
          case yps of
             Just ps -> pure ps
             Nothing -> do
-               sth <- run xconn $ flip S.prepare (unRawStatement st.raw)
+               sth <- retrySqlBusy do
+                  run xconn $ flip S.prepare (unRawStatement st.raw)
                let ps = PreparedStatement sth st.safeFFI
                atomicModifyIORef' xconn.statements \m ->
                   (Map.insert st.raw ps m, ps)
