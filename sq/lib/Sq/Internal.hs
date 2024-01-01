@@ -18,6 +18,7 @@ import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Control.Retry qualified as Retry
 import Data.Acquire qualified as A
+import Data.Bifunctor
 import Data.Bool
 import Data.Char qualified as Ch
 import Data.Coerce
@@ -195,14 +196,23 @@ push :: Name -> Input i -> Input i
 push n ba = Input \s ->
    Map.mapKeysMonotonic (consBindingName n) (runInput ba s)
 
-bindStatement :: S.Statement -> Input i -> i -> IO ()
-bindStatement st ii i = do
-   !m <-
-      Map.mapKeysMonotonic renderBindingName
-         <$> Map.traverseWithKey
-            (\bn -> either (Ex.throwM . ErrBinding bn) pure)
-            (runInput ii i)
-   S.bindNamed st $! Map.toAscList m
+--------------------------------------------------------------------------------
+
+newtype Bindings = Bindings (Map BindingName S.SQLData)
+
+bindings :: Input i -> i -> Either ErrBinding Bindings
+bindings ii i = fmap Bindings do
+   Map.traverseWithKey
+      ( \bn -> \case
+         Right !d -> Right d
+         Left e -> Left $ ErrBinding bn e
+      )
+      (runInput ii i)
+
+acquireBoundStatement :: S.Statement -> Bindings -> A.Acquire ()
+acquireBoundStatement sth (Bindings m) = do
+   let !raw = first renderBindingName <$> Map.toAscList m
+   R.mkAcquire1 (S.bindNamed sth raw) (\_ -> S.clearBindings sth)
 
 --------------------------------------------------------------------------------
 
@@ -668,12 +678,12 @@ rowsStream
    -> Transaction
    -> Z.Stream (Z.Of o) m ()
 rowsStream st i tx = do
+   !bs <- liftIO $ either Ex.throwM pure $ bindings st.input i
    (k, (ixs, typs)) <- lift $ A.allocateAcquire do
       xc <- acquireExclusiveConnectionLock tx.connection
       ps <- acquirePreparedStatement st xc
       ixs <- liftIO $ getStatementColumnNameIndexes ps.handle
-      R.mkAcquire1 (bindStatement ps.handle st.input i) \() -> do
-         S.clearBindings ps.handle
+      acquireBoundStatement ps.handle bs
       typs <- R.mkAcquire1 (newTMVarIO (Just ps)) \typs -> do
          atomically $ tryTakeTMVar typs >> putTMVar typs Nothing
       pure (ixs, typs)
