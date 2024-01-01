@@ -337,15 +337,25 @@ data ExclusiveConnection = ExclusiveConnection
    , statements :: IORef (Map RawStatement PreparedStatement)
    }
 
-run :: (MonadIO m) => ExclusiveConnection -> (S.Database -> IO x) -> m x
-run ExclusiveConnection{run = r} = liftIO . r
-
 instance Show ExclusiveConnection where
    showsPrec n c =
       showParen (n >= appPrec1) $
          showString "ExclusiveConnection {id = "
             . shows c.id
             . showString ", ...}"
+
+run :: (MonadIO m) => ExclusiveConnection -> (S.Database -> IO x) -> m x
+run ExclusiveConnection{run = r} k = liftIO \db -> r (retrySqlBusy (k db))
+
+retrySqlBusy :: IO a -> IO a
+retrySqlBusy ioa =
+   Retry.recovering
+      ( mappend
+         (Retry.constantDelay 50_000 {- 50 ms single retry -})
+         (Retry.limitRetries (20 * 30 {- 30 sec total -}))
+      )
+      [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
+      (\_ -> ioa)
 
 --------------------------------------------------------------------------------
 
@@ -455,15 +465,7 @@ acquireCommittingTransaction c = do
             Ex.withException (run xc (flip S.exec "ROLLBACK")) \e1 ->
                tlog $ pre <> " failed: " <> show (e1 :: Ex.SomeException)
             tlog $ pre <> " OK"
-         _ ->
-            -- We retry to commit for some time if the database is busy.
-            Retry.recovering
-               ( mappend
-                  (Retry.constantDelay 50_000 {- 50 ms single retry -})
-                  (Retry.limitRetries (20 * 10 {- 10 sec total -}))
-               )
-               [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
-               (\_ -> run xc (flip S.exec "COMMIT") <* tlog "COMMIT")
+         _ -> run xc (flip S.exec "COMMIT") <* tlog "COMMIT"
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
@@ -552,15 +554,7 @@ acquirePreparedStatement st xconn =
          case yps of
             Just ps -> pure ps
             Nothing -> do
-               -- We retry to prepare for some time if the database is busy.
-               sth <-
-                  Retry.recovering
-                     ( mappend
-                        (Retry.constantDelay 50_000 {- 50 ms single retry -})
-                        (Retry.limitRetries (20 * 10 {- 10 sec total -}))
-                     )
-                     [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
-                     (\_ -> run xconn $ flip S.prepare (unRawStatement st.raw))
+               sth <- run xconn $ flip S.prepare (unRawStatement st.raw)
                let ps = PreparedStatement sth st.safeFFI
                atomicModifyIORef' xconn.statements \m ->
                   (Map.insert st.raw ps m, ps)
