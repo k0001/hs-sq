@@ -442,11 +442,19 @@ acquireCommittingTransaction c = do
    tid <- newTransactionId
    let tlog = c.log (Just tid)
    R.mkAcquireType1
-      (run xc (flip S.exec "BEGIN") <* tlog "BEGIN")
+      ( do
+         Ex.withException
+            (run xc (flip S.exec "BEGIN"))
+            \(e :: Ex.SomeException) ->
+               tlog $ "BEGIN comitting transaction failed: " <> show e
+         tlog $ "BEGIN comitting transaction OK"
+      )
       ( const \case
-         A.ReleaseExceptionWith e -> do
-            run xc (flip S.exec "ROLLBACK")
-            tlog ("ROLLBACK (" <> show e <> ")")
+         A.ReleaseExceptionWith e0 -> do
+            let pre = "ROLLBACK (" <> show e0 <> ")"
+            Ex.withException (run xc (flip S.exec "ROLLBACK")) \e1 ->
+               tlog $ pre <> " failed: " <> show (e1 :: Ex.SomeException)
+            tlog $ pre <> " OK"
          _ ->
             -- We retry to commit for some time if the database is busy.
             Retry.recovering
@@ -473,7 +481,13 @@ acquireRollbackingTransaction c = do
    tid <- newTransactionId
    let tlog = c.log (Just tid)
    R.mkAcquireType1
-      (run xc (flip S.exec "BEGIN") <* tlog "BEGIN")
+      ( do
+         Ex.withException
+            (run xc (flip S.exec "BEGIN"))
+            \(e :: Ex.SomeException) ->
+               tlog $ "BEGIN rollbacking transaction failed:" <> show e
+         tlog $ "BEGIN rollbacking transaction OK"
+      )
       ( const \case
          A.ReleaseExceptionWith e -> do
             run xc (flip S.exec "ROLLBACK")
