@@ -503,14 +503,14 @@ acquireRollbackingTransaction c = do
          Ex.withException
             (run xc (flip S.exec "BEGIN"))
             \(e :: Ex.SomeException) ->
-               tlog $ "BEGIN rollbacking transaction failed:" <> show e
+               tlog $ "BEGIN rollbacking transaction failed: " <> show e
          tlog $ "BEGIN rollbacking transaction OK"
       )
       ( const \case
          A.ReleaseExceptionWith e -> do
             run xc (flip S.exec "ROLLBACK")
             tlog ("ROLLBACK (" <> show e <> ")")
-         _ -> run xc (flip S.exec "ROLLBACK")
+         _ -> run xc (flip S.exec "ROLLBACK") <* tlog "ROLLBACK"
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
