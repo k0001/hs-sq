@@ -659,7 +659,7 @@ row st tx = liftIO do
 -- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 1 row.
 rowMaybe :: (MonadIO m) => BoundStatement o -> Transaction -> m (Maybe o)
 rowMaybe st tx = liftIO $ R.runResourceT do
-   Z.next (rowsStream st tx) >>= \case
+   Z.next (rowsStream st (pure tx)) >>= \case
       Right (o, z1) ->
          Z.next z1 >>= \case
             Left () -> pure (Just o)
@@ -689,7 +689,7 @@ rowsList st tx =
          (\(!n, !e) o -> (n + 1, e <> Endo (o :)))
          (0, mempty)
          (fmap (flip appEndo []))
-      $ rowsStream st tx
+      $ rowsStream st (pure tx)
 
 -- | Stream of output rows.
 --
@@ -705,10 +705,11 @@ rowsList st tx =
 rowsStream
    :: (R.MonadResource m)
    => BoundStatement o
-   -> Transaction
+   -> A.Acquire Transaction
    -> Z.Stream (Z.Of o) m ()
-rowsStream st tx = do
+rowsStream st atx = do
    (k, (ixs, typs)) <- lift $ A.allocateAcquire do
+      tx <- atx
       xc <- acquireExclusiveConnectionLock tx.connection
       ps <- acquirePreparedStatement st.raw xc
       ixs <- liftIO $ getStatementColumnNameIndexes ps.handle
