@@ -26,6 +26,7 @@ import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Builder qualified as TB
 import Data.Time qualified as Time
 import Data.Time.Format.ISO8601 qualified as Time
+import Data.Void
 import Data.Word
 import Database.SQLite3 qualified as S
 import GHC.Float (float2Double)
@@ -75,6 +76,9 @@ instance DefaultEncoder Null where
 
 --------------------------------------------------------------------------------
 -- Extra encoders
+
+instance DefaultEncoder Void where
+   defaultEncoder = Encoder absurd
 
 -- | See 'encodeMaybe'.
 instance (DefaultEncoder a) => DefaultEncoder (Maybe a) where

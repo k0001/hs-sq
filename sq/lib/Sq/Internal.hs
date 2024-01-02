@@ -34,6 +34,7 @@ import Data.Monoid
 import Data.Profunctor
 import Data.String
 import Data.Text qualified as T
+import Data.Void
 import Database.SQLite3 qualified as S
 import GHC.IO (unsafeUnmask)
 import GHC.IO.Exception
@@ -181,6 +182,9 @@ newtype Input i
       (Contravariant, Divisible, Decidable)
       via Op (Map.Map BindingName (Either Ex.SomeException S.SQLData))
 
+void :: Input Void
+void = Input absurd
+
 runInput
    :: Input i -> i -> Map.Map BindingName (Either Ex.SomeException S.SQLData)
 runInput = coerce
@@ -198,10 +202,11 @@ push n ba = Input \s ->
 
 --------------------------------------------------------------------------------
 
-newtype RawBindings = RawBindings (Map BindingName S.SQLData)
+newtype BoundInput = BoundInput (Map BindingName S.SQLData)
+   deriving newtype (Eq, Show)
 
-rawBindings :: Input i -> i -> Either ErrBinding RawBindings
-rawBindings ii i = fmap RawBindings do
+bindInput :: Input i -> i -> Either ErrBinding BoundInput
+bindInput ii i = fmap BoundInput do
    Map.traverseWithKey
       ( \bn -> \case
          Right !d -> Right d
@@ -209,8 +214,8 @@ rawBindings ii i = fmap RawBindings do
       )
       (runInput ii i)
 
-acquireBoundStatement :: S.Statement -> RawBindings -> A.Acquire ()
-acquireBoundStatement sth (RawBindings m) = do
+bindRawStatement :: S.Statement -> BoundInput -> A.Acquire ()
+bindRawStatement sth (BoundInput m) = do
    let !raw = first renderBindingName <$> Map.toAscList m
    R.mkAcquire1 (S.bindNamed sth raw) (\_ -> S.clearBindings sth)
 
@@ -382,7 +387,7 @@ acquireExclusiveConnectionLock c =
                   resourceVanishedWithCallStack
                      "acquireExclusiveConnectionLock"
       )
-      (atomically . void . tryPutTMVar c.xconn . Just)
+      (atomically . fmap (const ()) . tryPutTMVar c.xconn . Just)
 
 data DatabaseMessage
    = forall x.
@@ -521,6 +526,32 @@ acquireRollbackingTransaction c = do
 
 --------------------------------------------------------------------------------
 
+data BoundStatement o = BoundStatement
+   { safeFFI :: Bool
+   , input :: BoundInput
+   , output :: Output o
+   , raw :: RawStatement
+   }
+   deriving stock (Functor)
+
+instance Show (BoundStatement o) where
+   showsPrec n s =
+      showParen (n >= appPrec1) $
+         showString "BoundStatement{raw = "
+            . shows s.raw
+            . showString ", safeFFI = "
+            . shows s.safeFFI
+            . showString ", input = "
+            . shows s.input
+            . showString "}"
+
+bindStatement :: Statement i o -> i -> Either ErrBinding (BoundStatement o)
+bindStatement s@Statement{safeFFI, output, raw} i = do
+   input <- bindInput s.input i
+   pure BoundStatement{..}
+
+--------------------------------------------------------------------------------
+
 -- | A statements statement taking a value @i@ as input and producing rows of
 -- @o@ values as output.
 data Statement i o = Statement
@@ -546,37 +577,37 @@ instance Functor (Statement i) where
    fmap = rmap
 
 instance Profunctor Statement where
-   dimap f g s = s{input = f >$< s.input, output = g <$> s.output}
+   dimap f g Statement{..} =
+      Statement{input = f >$< input, output = g <$> output, ..}
 
 --------------------------------------------------------------------------------
 
-data PreparedStatement = PreparedStatement
+newtype PreparedStatement = PreparedStatement
    { handle :: S.Statement
-   , safeFFI :: Bool
    }
 
 acquirePreparedStatement
-   :: Statement i o
+   :: RawStatement
    -> ExclusiveConnection
    -> A.Acquire PreparedStatement
-acquirePreparedStatement st xconn =
+acquirePreparedStatement rst xconn =
    R.mkAcquire1
       ( do
          yps <- atomicModifyIORef' xconn.statements \m ->
-            case Map.splitLookup st.raw m of
+            case Map.splitLookup rst m of
                (ml, yps, mr) -> (ml <> mr, yps)
          case yps of
             Just ps -> pure ps
             Nothing -> do
-               sth <- run xconn $ flip S.prepare (unRawStatement st.raw)
-               let ps = PreparedStatement sth st.safeFFI
+               sth <- run xconn $ flip S.prepare (unRawStatement rst)
+               let ps = PreparedStatement sth
                atomicModifyIORef' xconn.statements \m ->
-                  (Map.insert st.raw ps m, ps)
+                  (Map.insert rst ps m, ps)
       )
       \ps -> flip Ex.onException (S.finalize ps.handle) do
          S.reset ps.handle
          atomicModifyIORef' xconn.statements \m ->
-            (Map.insert st.raw ps m, ())
+            (Map.insert rst ps m, ())
 
 --------------------------------------------------------------------------------
 
@@ -619,21 +650,16 @@ data ErrRows
    deriving anyclass (Ex.Exception)
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
-row :: (MonadIO m) => Statement i o -> i -> A.Acquire Transaction -> m o
-row st i atx = liftIO do
-   rowMaybe st i atx >>= \case
+row :: (MonadIO m) => BoundStatement o -> Transaction -> m o
+row st tx = liftIO do
+   rowMaybe st tx >>= \case
       Just o -> pure o
       Nothing -> Ex.throwM ErrRows_TooFew
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 1 row.
-rowMaybe
-   :: (MonadIO m)
-   => Statement i o
-   -> i
-   -> A.Acquire Transaction
-   -> m (Maybe o)
-rowMaybe st i atx = liftIO $ R.runResourceT do
-   Z.next (rowsStream st i atx) >>= \case
+rowMaybe :: (MonadIO m) => BoundStatement o -> Transaction -> m (Maybe o)
+rowMaybe st tx = liftIO $ R.runResourceT do
+   Z.next (rowsStream st tx) >>= \case
       Right (o, z1) ->
          Z.next z1 >>= \case
             Left () -> pure (Just o)
@@ -643,12 +669,11 @@ rowMaybe st i atx = liftIO $ R.runResourceT do
 -- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
 rowsNonEmpty
    :: (MonadIO m)
-   => Statement i o
-   -> i
-   -> A.Acquire Transaction
+   => BoundStatement o
+   -> Transaction
    -> m (Int64, NEL.NonEmpty o)
-rowsNonEmpty st i atx = liftIO do
-   rowsList st i atx >>= \case
+rowsNonEmpty st tx = liftIO do
+   rowsList st tx >>= \case
       (n, os) | Just nos <- NEL.nonEmpty os -> pure (n, nos)
       _ -> Ex.throwM ErrRows_TooFew
 
@@ -656,20 +681,15 @@ rowsNonEmpty st i atx = liftIO do
 --
 -- Holds an exclusive lock on the database connection temporarily, while the
 -- list is being constructed.
-rowsList
-   :: (MonadIO m)
-   => Statement i o
-   -> i
-   -> A.Acquire Transaction
-   -> m (Int64, [o])
-rowsList st i atx =
+rowsList :: (MonadIO m) => BoundStatement o -> Transaction -> m (Int64, [o])
+rowsList st tx =
    liftIO
       $ R.runResourceT
       $ Z.fold_
          (\(!n, !e) o -> (n + 1, e <> Endo (o :)))
          (0, mempty)
          (fmap (flip appEndo []))
-      $ rowsStream st i atx
+      $ rowsStream st tx
 
 -- | Stream of output rows.
 --
@@ -684,18 +704,15 @@ rowsList st i atx =
 -- exiting @m@ until later.
 rowsStream
    :: (R.MonadResource m)
-   => Statement i o
-   -> i
-   -> A.Acquire Transaction
+   => BoundStatement o
+   -> Transaction
    -> Z.Stream (Z.Of o) m ()
-rowsStream st i atx = do
-   !bs <- liftIO $ either Ex.throwM pure $ rawBindings st.input i
+rowsStream st tx = do
    (k, (ixs, typs)) <- lift $ A.allocateAcquire do
-      tx <- atx
       xc <- acquireExclusiveConnectionLock tx.connection
-      ps <- acquirePreparedStatement st xc
+      ps <- acquirePreparedStatement st.raw xc
       ixs <- liftIO $ getStatementColumnNameIndexes ps.handle
-      acquireBoundStatement ps.handle bs
+      bindRawStatement ps.handle st.input
       typs <- R.mkAcquire1 (newTMVarIO (Just ps)) \typs -> do
          atomically $ tryTakeTMVar typs >> putTMVar typs Nothing
       pure (ixs, typs)
@@ -706,9 +723,9 @@ rowsStream st i atx = do
                Just ps -> pure ps
                Nothing -> Ex.throwM $ resourceVanishedWithCallStack "Rows"
          )
-         (atomically . void . tryPutTMVar typs . Just)
+         (atomically . fmap (const ()) . tryPutTMVar typs . Just)
          \ps ->
-            restore (bool S.stepNoCB S.step ps.safeFFI ps.handle) >>= \case
+            restore (bool S.stepNoCB S.step st.safeFFI ps.handle) >>= \case
                S.Done -> Left <$> R.releaseType k A.ReleaseEarly
                S.Row ->
                   either Ex.throwM (pure . Right) =<< restore do

@@ -31,6 +31,7 @@ module Sq
    , Input
    , encode
    , push
+   , void
 
     -- * Statement output
    , Output
@@ -39,6 +40,10 @@ module Sq
     -- * Raw statements
    , RawStatement (..)
    , rawStatement
+
+    -- * Bound statement
+   , BoundStatement
+   , bindStatement
 
     -- * Names
    , Name
