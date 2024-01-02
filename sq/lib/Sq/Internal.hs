@@ -355,14 +355,16 @@ instance Show ExclusiveConnection where
             . showString ", ...}"
 
 run :: (MonadIO m) => ExclusiveConnection -> (S.Database -> IO x) -> m x
-run ExclusiveConnection{run = r} = liftIO . r
+run ExclusiveConnection{run = r} k = liftIO $ r (retrySqlBusy . k)
 
 retrySqlBusy :: IO a -> IO a
 retrySqlBusy = \ioa ->
    Retry.recovering
       ( mappend
          (Retry.constantDelay 50_000 {- 50 ms single retry -})
-         (Retry.limitRetries (20 * 30 {- 30 sec total -}))
+         ( -- TODO replace this with a log msg and forever retry
+           Retry.limitRetries (20 * 600 {- 10 min total -})
+         )
       )
       [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
       (\_ -> ioa)
@@ -566,8 +568,7 @@ acquirePreparedStatement st xconn =
          case yps of
             Just ps -> pure ps
             Nothing -> do
-               sth <- retrySqlBusy do
-                  run xconn $ flip S.prepare (unRawStatement st.raw)
+               sth <- run xconn $ flip S.prepare (unRawStatement st.raw)
                let ps = PreparedStatement sth st.safeFFI
                atomicModifyIORef' xconn.statements \m ->
                   (Map.insert st.raw ps m, ps)
