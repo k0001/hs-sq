@@ -579,15 +579,23 @@ instance Profunctor Statement where
 
 --------------------------------------------------------------------------------
 
-newtype PreparedStatement = PreparedStatement
+data PreparedStatement = PreparedStatement
    { handle :: S.Statement
+   , safeFFI :: Bool
    }
+
+step :: PreparedStatement -> IO S.StepResult
+step p
+   | p.safeFFI = retrySqlBusy $ S.step p.handle
+   | otherwise = retrySqlBusy $ S.stepNoCB p.handle
 
 acquirePreparedStatement
    :: RawStatement
+   -> Bool
+   -- ^ safeFFI
    -> ExclusiveConnection
    -> A.Acquire PreparedStatement
-acquirePreparedStatement rst xconn =
+acquirePreparedStatement rst safeFFI xconn =
    R.mkAcquire1
       ( do
          yps <- atomicModifyIORef' xconn.statements \m ->
@@ -596,8 +604,8 @@ acquirePreparedStatement rst xconn =
          case yps of
             Just ps -> pure ps
             Nothing -> do
-               sth <- run xconn $ flip S.prepare (unRawStatement rst)
-               let ps = PreparedStatement sth
+               handle <- run xconn $ flip S.prepare (unRawStatement rst)
+               let ps = PreparedStatement{handle, safeFFI}
                atomicModifyIORef' xconn.statements \m ->
                   (Map.insert rst ps m, ps)
       )
@@ -708,7 +716,7 @@ rowsStream st atx = do
    (k, (ixs, typs)) <- lift $ A.allocateAcquire do
       tx <- atx
       xc <- acquireExclusiveConnectionLock tx.connection
-      ps <- acquirePreparedStatement st.raw xc
+      ps <- acquirePreparedStatement st.raw st.safeFFI xc
       ixs <- liftIO $ getStatementColumnNameIndexes ps.handle
       bindRawStatement ps.handle st.input
       typs <- R.mkAcquire1 (newTMVarIO (Just ps)) \typs -> do
@@ -723,7 +731,7 @@ rowsStream st atx = do
          )
          (atomically . fmap (const ()) . tryPutTMVar typs . Just)
          \ps ->
-            restore (bool S.stepNoCB S.step st.safeFFI ps.handle) >>= \case
+            restore (step ps) >>= \case
                S.Done -> Left <$> R.releaseType k A.ReleaseEarly
                S.Row ->
                   either Ex.throwM (pure . Right) =<< restore do
