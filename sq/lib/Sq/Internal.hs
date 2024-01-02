@@ -198,10 +198,10 @@ push n ba = Input \s ->
 
 --------------------------------------------------------------------------------
 
-newtype Bindings = Bindings (Map BindingName S.SQLData)
+newtype RawBindings = RawBindings (Map BindingName S.SQLData)
 
-bindings :: Input i -> i -> Either ErrBinding Bindings
-bindings ii i = fmap Bindings do
+rawBindings :: Input i -> i -> Either ErrBinding RawBindings
+rawBindings ii i = fmap RawBindings do
    Map.traverseWithKey
       ( \bn -> \case
          Right !d -> Right d
@@ -209,8 +209,8 @@ bindings ii i = fmap Bindings do
       )
       (runInput ii i)
 
-acquireBoundStatement :: S.Statement -> Bindings -> A.Acquire ()
-acquireBoundStatement sth (Bindings m) = do
+acquireBoundStatement :: S.Statement -> RawBindings -> A.Acquire ()
+acquireBoundStatement sth (RawBindings m) = do
    let !raw = first renderBindingName <$> Map.toAscList m
    R.mkAcquire1 (S.bindNamed sth raw) (\_ -> S.clearBindings sth)
 
@@ -619,16 +619,21 @@ data ErrRows
    deriving anyclass (Ex.Exception)
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
-row :: (MonadIO m) => Statement i o -> i -> Transaction -> m o
-row st i tx = liftIO do
-   rowMaybe st i tx >>= \case
+row :: (MonadIO m) => Statement i o -> i -> A.Acquire Transaction -> m o
+row st i atx = liftIO do
+   rowMaybe st i atx >>= \case
       Just o -> pure o
       Nothing -> Ex.throwM ErrRows_TooFew
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 1 row.
-rowMaybe :: (MonadIO m) => Statement i o -> i -> Transaction -> m (Maybe o)
-rowMaybe st i tx = liftIO $ R.runResourceT do
-   Z.next (rowsStream st i (pure tx)) >>= \case
+rowMaybe
+   :: (MonadIO m)
+   => Statement i o
+   -> i
+   -> A.Acquire Transaction
+   -> m (Maybe o)
+rowMaybe st i atx = liftIO $ R.runResourceT do
+   Z.next (rowsStream st i atx) >>= \case
       Right (o, z1) ->
          Z.next z1 >>= \case
             Left () -> pure (Just o)
@@ -640,10 +645,10 @@ rowsNonEmpty
    :: (MonadIO m)
    => Statement i o
    -> i
-   -> Transaction
+   -> A.Acquire Transaction
    -> m (Int64, NEL.NonEmpty o)
-rowsNonEmpty st i tx = liftIO do
-   rowsList st i tx >>= \case
+rowsNonEmpty st i atx = liftIO do
+   rowsList st i atx >>= \case
       (n, os) | Just nos <- NEL.nonEmpty os -> pure (n, nos)
       _ -> Ex.throwM ErrRows_TooFew
 
@@ -651,15 +656,20 @@ rowsNonEmpty st i tx = liftIO do
 --
 -- Holds an exclusive lock on the database connection temporarily, while the
 -- list is being constructed.
-rowsList :: (MonadIO m) => Statement i o -> i -> Transaction -> m (Int64, [o])
-rowsList st i tx =
+rowsList
+   :: (MonadIO m)
+   => Statement i o
+   -> i
+   -> A.Acquire Transaction
+   -> m (Int64, [o])
+rowsList st i atx =
    liftIO
       $ R.runResourceT
       $ Z.fold_
          (\(!n, !e) o -> (n + 1, e <> Endo (o :)))
          (0, mempty)
          (fmap (flip appEndo []))
-      $ rowsStream st i (pure tx)
+      $ rowsStream st i atx
 
 -- | Stream of output rows.
 --
@@ -679,7 +689,7 @@ rowsStream
    -> A.Acquire Transaction
    -> Z.Stream (Z.Of o) m ()
 rowsStream st i atx = do
-   !bs <- liftIO $ either Ex.throwM pure $ bindings st.input i
+   !bs <- liftIO $ either Ex.throwM pure $ rawBindings st.input i
    (k, (ixs, typs)) <- lift $ A.allocateAcquire do
       tx <- atx
       xc <- acquireExclusiveConnectionLock tx.connection
