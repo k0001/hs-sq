@@ -365,11 +365,8 @@ run ExclusiveConnection{run = r} k = liftIO $ r (retrySqlBusy . k)
 retrySqlBusy :: IO a -> IO a
 retrySqlBusy = \ioa ->
    Retry.recovering
-      ( mappend
-         (Retry.constantDelay 50_000 {- 50 ms single retry -})
-         ( -- TODO replace this with a log msg and forever retry
-           Retry.limitRetries (20 * 600 {- 10 min total -})
-         )
+      ( -- TODO log after a bunch of retries
+        Retry.constantDelay 50_000 {- 50 ms single retry -}
       )
       [\_ -> Ex.Handler \e -> pure (S.sqlError e == S.ErrorBusy)]
       (\_ -> ioa)
