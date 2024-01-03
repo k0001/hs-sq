@@ -470,7 +470,7 @@ acquireCommittingTransaction c = do
    R.mkAcquireType1
       ( do
          Ex.withException
-            (run xc (flip S.exec "BEGIN"))
+            (run xc (flip S.exec "BEGIN IMMEDIATE"))
             \(e :: Ex.SomeException) ->
                tlog $ "BEGIN comitting transaction failed: " <> show e
          tlog $ "BEGIN comitting transaction OK"
@@ -501,7 +501,7 @@ acquireRollbackingTransaction c = do
    R.mkAcquireType1
       ( do
          Ex.withException
-            (run xc (flip S.exec "BEGIN"))
+            (run xc (flip S.exec "BEGIN DEFERRED"))
             \(e :: Ex.SomeException) ->
                tlog $ "BEGIN rollbacking transaction failed: " <> show e
          tlog $ "BEGIN rollbacking transaction OK"
