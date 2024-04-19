@@ -22,40 +22,99 @@ common basic
     base == 4.*,
   default-extensions:
     BlockArguments
+    DataKinds
     DeriveAnyClass
-    DerivingVia
     DerivingStrategies
+    DerivingVia
     DuplicateRecordFields
     LambdaCase
+    MultiWayIf
     OverloadedRecordDot
     OverloadedStrings
     RecordWildCards
+    TypeFamilies
+    ViewPatterns
 
 library
   import: basic
   hs-source-dirs: lib
   exposed-modules:
     Sq
-    Sq.Internal
   other-modules:
-    Sq.Encoders
+    Sq.Connection
     Sq.Decoders
+    Sq.Encoders
+    Sq.Input
+    Sq.Mode
+    Sq.Names
+    Sq.Null
+    Sq.Output
+    Sq.Pool
+    Sq.Statement
+    Sq.Support
+    Sq.M
   build-depends:
     async,
+    attoparsec,
     binary,
     bytestring,
+    clock,
     containers,
     contravariant,
+    deepseq,
     direct-sqlite,
+    directory,
+    exceptions,
+    filepath,
     profunctors,
     resource-pool,
     resourcet,
     resourcet-extra,
-    retry,
     safe-exceptions,
+    singletons,
+    singletons-th,
     stm,
     streaming,
     template-haskell,
     text,
     time,
     transformers,
+
+test-suite test
+  import: basic
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: test
+  ghc-options: -O2 -Wall -threaded -rtsopts -with-rtsopts=-N -fno-prof-count-entries
+  other-modules:
+    Sq.Test
+    Sq.Test.Codec
+  build-depends:
+    bytestring,
+    hedgehog,
+    resourcet,
+    resourcet-extra,
+    safe-exceptions,
+    sq,
+    tasty,
+    tasty-hedgehog,
+    tasty-hunit,
+    text,
+    time,
+
+benchmark bench
+  import: basic
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: bench
+  ghc-options: -O2 -Wall -threaded -rtsopts -with-rtsopts=-N -fno-prof-count-entries
+  build-depends:
+    async,
+    async-pool,
+    containers,
+    criterion,
+    resourcet,
+    resourcet-extra,
+    safe-exceptions,
+    sq,
+    stm,

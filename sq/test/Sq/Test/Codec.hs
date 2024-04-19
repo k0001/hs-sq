@@ -1,0 +1,123 @@
+module Sq.Test.Codec (tree) where
+
+import Control.Exception.Safe qualified as Ex
+import Control.Monad.IO.Class
+import Data.Bits
+import Data.ByteString qualified as B
+import Data.ByteString.Lazy qualified as BL
+import Data.Fixed
+import Data.Int
+import Data.Maybe
+import Data.Text qualified as T
+import Data.Text.Lazy qualified as TL
+import Data.Time qualified as Time
+import Data.Time.Clock.POSIX qualified as Time
+import Data.Time.Format.ISO8601 qualified as Time
+import Data.Typeable
+import Data.Word
+import Hedgehog qualified as H
+import Hedgehog.Gen qualified as H
+import Hedgehog.Range qualified as HR
+import Numeric.Natural
+import Sq qualified
+import Test.Tasty (testGroup)
+import Test.Tasty.Hedgehog (testProperty)
+import Test.Tasty.Runners (TestTree)
+
+--------------------------------------------------------------------------------
+
+tree :: IO (Sq.Pool Sq.Write) -> TestTree
+tree iop =
+   testGroup
+      "decode . encode"
+      [ t @Bool $ H.bool
+      , t @Int $ H.integral HR.constantBounded
+      , t @Int8 $ H.integral HR.constantBounded
+      , t @Int16 $ H.integral HR.constantBounded
+      , t @Int32 $ H.integral HR.constantBounded
+      , t @Int64 $ H.integral HR.constantBounded
+      , t @Word $ H.integral HR.constantBounded
+      , t @Word8 $ H.integral HR.constantBounded
+      , t @Word16 $ H.integral HR.constantBounded
+      , t @Word32 $ H.integral HR.constantBounded
+      , t @Word64 $ H.integral HR.constantBounded
+      , t @Word64 $ H.integral HR.constantBounded
+      , t @Natural $ H.integral $ HR.constant 0 maxNatural
+      , t @Integer $ H.integral $ HR.constantFrom 0 minInteger maxInteger
+      , t @Char H.unicode
+      , t @String $ H.string (HR.constant 0 50) H.unicode
+      , t @T.Text $ H.text (HR.constant 0 50) H.unicode
+      , t @TL.Text $ fmap TL.fromStrict $ H.text (HR.constant 0 50) H.unicode
+      , t @B.ByteString $ H.bytes (HR.constant 0 50)
+      , t @BL.ByteString $ fmap BL.fromStrict $ H.bytes (HR.constant 0 50)
+      , t @Time.UTCTime $ genUTCTime (HR.constantFrom epochUTCTime minUTCTime maxUTCTime)
+      , t @Double $ H.double (HR.constantFrom 0 (fromIntegral minInteger) (fromIntegral maxInteger))
+      , t @Float $ H.float (HR.constantFrom 0 (fromIntegral minInteger) (fromIntegral maxInteger))
+      -- TODO FAIL: , testProperty "Char" $ t @Char (pure '\55296')
+      ]
+  where
+   t
+      :: forall a
+       . (Typeable a, Eq a, Show a, Sq.DefaultEncoder a, Sq.DefaultDecoder a)
+      => H.Gen a
+      -> TestTree
+   t ga =
+      testGroup
+         (tyConName (typeRepTyCon (typeRep ga)))
+         [ testProperty "pure" $ H.property do
+            a0 <- H.forAll ga
+            case Sq.runEncoder Sq.defaultEncoder a0 of
+               Left e0 -> Ex.throwM e0
+               Right raw -> case Sq.runDecoder Sq.defaultDecoder raw of
+                  Left e -> Ex.throwM e
+                  Right a1 -> a0 H.=== a1
+         , testProperty "db" $ H.property do
+            p <- liftIO iop
+            a0 <- H.forAll ga
+            a1 <- Sq.row p.read idStatement a0
+            a0 H.=== a1
+         ]
+
+idStatement
+   :: (Sq.DefaultEncoder x, Sq.DefaultDecoder x)
+   => Sq.Statement Sq.Read x x
+idStatement = Sq.readStatement (Sq.encode "i") (Sq.decode "o") "SELECT $i AS o"
+
+maxNatural :: Natural
+maxNatural = 2 ^ (256 :: Int) - 1
+
+maxInteger :: Integer
+maxInteger = 2 ^ (255 :: Int) - 1
+
+minInteger :: Integer
+minInteger = complement maxInteger
+
+minUTCTime :: Time.UTCTime
+minUTCTime = fromJust $ Time.iso8601ParseM "-9999-01-01T00:00:00Z"
+
+maxUTCTime :: Time.UTCTime
+maxUTCTime = fromJust $ Time.iso8601ParseM "9999-12-31T24:00:00Z"
+
+epochUTCTime :: Time.UTCTime
+epochUTCTime = posixPicoSecondsToUTCTime 0
+
+genUTCTime :: (H.MonadGen m) => H.Range Time.UTCTime -> m Time.UTCTime
+genUTCTime =
+   fmap posixPicoSecondsToUTCTime
+      . H.integral
+      . fmap utcTimeToPOSIXPicoSeconds
+
+utcTimeToPOSIXPicoSeconds :: Time.UTCTime -> Integer
+utcTimeToPOSIXPicoSeconds t = i
+  where
+   MkFixed i = Time.nominalDiffTimeToSeconds $ Time.utcTimeToPOSIXSeconds t
+
+posixPicoSecondsToUTCTime :: Integer -> Time.UTCTime
+posixPicoSecondsToUTCTime =
+   Time.posixSecondsToUTCTime . Time.secondsToNominalDiffTime . MkFixed
+
+-- genRational :: (H.MonadGen m) => m Rational
+-- genRational = do
+--    n <- genInteger
+--    d <- H.integral $ H.linear 1 (10 ^ (10 :: Int))
+--    pure (n % d)

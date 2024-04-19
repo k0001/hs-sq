@@ -2,11 +2,16 @@
   description = "Haskell 'sq' library";
 
   inputs = {
-    flakety.url = "github:k0001/flakety";
+    #    flakety.url = "github:k0001/flakety";
+    flakety.url = "git+file:///home/k/q/flakety.git";
     nixpkgs.follows = "flakety/nixpkgs";
     flake-parts.follows = "flakety/flake-parts";
-    hs_resourcet-extra.url = "github:k0001/hs-resourcet-extra";
+    hs_resourcet-extra.url =
+      "github:k0001/hs-resourcet-extra/8b05ef384b628e66c0c6742e40290cb06aaca13a";
     hs_resourcet-extra.inputs.flakety.follows = "flakety";
+    hs_direct-sqlite.url =
+      "github:IreneKnapp/direct-sqlite/15528503e2a53a87c50d66f52032bda5058d46f7";
+    hs_direct-sqlite.flake = false;
   };
 
   outputs = inputs@{ ... }:
@@ -23,13 +28,15 @@
           in {
             haskell = prev.haskell // {
               packageOverrides = prev.lib.composeExtensions
-                (prev.haskell.packageOverrides or (_: _: { })) (hself: hsuper:
+                (prev.haskell.packageOverrides or (_: _: { })) (hfinal: hprev:
                   prev.lib.optionalAttrs
-                  (prev.lib.versionAtLeast hsuper.ghc.version "9.6") {
-                    sq = hself.callPackage ./sq { };
-                    direct-sqlite = hsLib.addExtraLibrary
-                      (hsLib.enableCabalFlag hsuper.direct-sqlite "systemlib")
-                      final.sqlite;
+                  (prev.lib.versionAtLeast hprev.ghc.version "9.6") {
+                    sq = hsLib.doBenchmark (hfinal.callPackage ./sq { });
+                    direct-sqlite = hfinal.callCabal2nix "direct-sqlite"
+                      inputs.hs_direct-sqlite { };
+                    #direct-sqlite = hsLib.addExtraLibrary
+                    #  (hsLib.enableCabalFlag hprev.direct-sqlite "systemlib")
+                    #  final.sqlite;
                   });
             };
           })
@@ -42,16 +49,12 @@
         };
         packages = {
           sq__ghc98 = pkgs.haskell.packages.ghc98.sq;
-          sq__ghc96 = pkgs.haskell.packages.ghc96.sq;
           default = pkgs.releaseTools.aggregate {
             name = "every output from this flake";
             constituents = [
               config.packages.sq__ghc98
               config.packages.sq__ghc98.doc
               config.devShells.ghc98
-              config.packages.sq__ghc96
-              config.packages.sq__ghc96.doc
-              config.devShells.ghc96
             ];
           };
         };
@@ -59,14 +62,18 @@
           mkShellFor = ghc:
             ghc.shellFor {
               packages = p: [ p.sq ];
+              doBenchmark = true;
               withHoogle = true;
-              nativeBuildInputs =
-                [ pkgs.cabal-install pkgs.cabal2nix pkgs.ghcid pkgs.sqlite ];
+              nativeBuildInputs = [
+                pkgs.cabal-install
+                pkgs.cabal2nix
+                pkgs.ghcid
+                pkgs.sqlite-interactive
+              ];
             };
         in {
           default = config.devShells.ghc98;
           ghc98 = mkShellFor pkgs.haskell.packages.ghc98;
-          ghc96 = mkShellFor pkgs.haskell.packages.ghc96;
         };
       };
     };
