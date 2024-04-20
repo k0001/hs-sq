@@ -21,8 +21,7 @@ module Sq.Connection
    , SavepointId (..)
    , Savepoint
    , savepoint
-   , rollbackToSavepoint
-   , rollbacking
+   , rollbackTo
    , ErrRows (..)
    , ErrStatement (..)
    ) where
@@ -97,6 +96,7 @@ modeFlags = \case
 
 --------------------------------------------------------------------------------
 
+-- | SQLite connection settings.
 data Settings = Settings
    { file :: FilePath
    -- ^ Database file path. Not an URI.
@@ -105,7 +105,7 @@ data Settings = Settings
    -- supported. Maybe use @tmpfs@ if you need that?
    , vfs :: S.SQLVFS
    , timeout :: Word32
-   -- ^ SQLite Busy Timeout in milliseconds.
+   -- ^ SQLite busy Timeout in milliseconds.
    }
    deriving stock (Eq, Show)
 
@@ -132,6 +132,8 @@ defaultSettings file =
 -- easier to export just 'Sq.Pool'.
 data Connection (mode :: Mode) = Connection
    { _id :: ConnectionId
+   , timeout :: Word32
+   -- ^ Same @timeout@ as in 'Settings'
    , di :: Di.Df1
    , xconn :: TMVar (Maybe (ExclusiveConnection mode))
    -- ^ 'Nothing' if the connection has vanished.
@@ -141,7 +143,7 @@ instance HasField "id" (Connection mode) ConnectionId where
    getField = (._id)
 
 instance NFData (Connection mode) where
-   rnf (Connection !_ !_ !_) = ()
+   rnf (Connection !_ !_ !_ !_) = ()
 
 instance Show (Connection mode) where
    showsPrec _ c = showString "Connection{id = " . shows c.id . showChar '}'
@@ -156,7 +158,7 @@ connection di0 s = do
    (di1, xc) <- exclusiveConnection di0 s
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   pure Connection{xconn, _id = xc.id, di = di1}
+   pure Connection{xconn, _id = xc.id, di = di1, timeout = s.timeout}
 
 --------------------------------------------------------------------------------
 
@@ -183,7 +185,8 @@ lockConnection :: Connection mode -> A.Acquire (ExclusiveConnection mode)
 lockConnection c =
    R.mkAcquire1
       ( warningOnException (Di.push "lock" c.di) do
-         y <- timeout 10_000_000 $ atomically do
+         -- We reuse setBusyHandler's timeout because why not.
+         y <- timeout (fromIntegral c.timeout * 1000) $ atomically do
             takeTMVar c.xconn >>= \case
                Just x -> pure x
                Nothing ->
@@ -323,9 +326,14 @@ setBusyHandler (S.Database pDB) tmaxMS = do
 
 --------------------------------------------------------------------------------
 
--- | A database transaction handle. It's safe to try to use this 'Connection'
--- concurrently.
+-- | A database transaction handle.
 --
+-- @mode@ indicates whether 'Read'-only or read-'Write' 'Statement's are
+-- supported.
+--
+-- It's safe to try to use this 'Transaction' concurrently. Concurrency is
+-- handled internally.
+
 -- While the 'Transaction' is active, an exclusive lock is held on the
 -- underlying 'Connection'.
 data Transaction (mode :: Mode) = forall cmode.
@@ -701,24 +709,8 @@ savepoint Transaction{conn} = liftIO do
                run xc $ flip S.exec ("ROLLBACK TO s" <> show' spId)
          }
 
-rollbackToSavepoint :: (MonadIO m) => Savepoint -> m ()
-rollbackToSavepoint s = liftIO s.rollback
-
--- | All the database changes through the 'Transaction' will be rolled back
--- on release.
---
--- @
--- 'rollbacking' tx = 'void' $ 'R.mkAcquire1' ('savepoint' tx) 'rollbackToSavepoint'
--- @
---
--- You probably want to use 'rollbacking' as follows:
---
--- @
--- 'Sq.with' ('rollbacking' ('pure' tx)) \\() -> do
---     ...
--- @
-rollbacking :: Transaction Write -> A.Acquire ()
-rollbacking tx = void $ R.mkAcquire1 (savepoint tx) rollbackToSavepoint
+rollbackTo :: (MonadIO m) => Savepoint -> m ()
+rollbackTo s = liftIO s.rollback
 
 --------------------------------------------------------------------------------
 

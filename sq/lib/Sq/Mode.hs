@@ -33,14 +33,17 @@ instance Di.ToValue Mode where
       Write -> "write"
 
 --------------------------------------------------------------------------------
+
+-- | How to release a 'Transaction'.
 data Release
-   = -- | Transaction supports read and write operations. Changes are
-     -- commited to the database unless there is an unhandled exception
-     -- during the transaction, in which case they are rolled-back.
+   = -- | Changes are commited to the database unless there is an unhandled
+     -- exception during the transaction, in which case they are rolled-back.
      Commit
-   | -- | Transaction supports read and write operations. However,
-     -- changes are always rolled back at the end of the transaction.
-     -- This is mostly useful for testing purposes.
+   | -- | Changes are always rolled back at the end of the transaction. This is
+     -- mostly useful for testing purposes. Notice that an equivalent behavior
+     -- can be achieved by 'Control.Exception.Safe.bracket'ing changes between
+     -- 'Sq.savepoint' and 'Sq.rollbackTo' in a 'Commit'ting transaction.
+     -- However, using 'Rollback' is much faster.
      Rollback
    deriving stock (Eq, Ord, Show)
 

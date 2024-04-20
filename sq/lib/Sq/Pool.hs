@@ -39,6 +39,13 @@ newPoolId = PoolId <$> newUnique
 
 --------------------------------------------------------------------------------
 
+-- | Pool of connections to a SQLite database.
+--
+-- @mode@ indicates whether 'Read'-only or read-'Write' 'Statement's are
+-- supported.
+--
+-- It's safe to try to use this 'Pool' concurrently. Concurrency is
+-- handled internally.
 data Pool (mode :: Mode) where
    Pool_Read
       :: PoolId
@@ -59,6 +66,7 @@ instance HasField "id" (Pool mode) PoolId where
       Pool_Read x _ -> x
       Pool_Write x _ _ -> x
 
+-- | @'read' p == p.read@
 instance
    HasField
       "read"
@@ -67,6 +75,7 @@ instance
    where
    getField = read
 
+-- | @'commit' p == p.commit@
 instance
    HasField
       "commit"
@@ -75,6 +84,7 @@ instance
    where
    getField = commit
 
+-- | @'rollback' p == p.rollback@
 instance
    HasField
       "rollback"
@@ -112,15 +122,29 @@ pool di0 cs = do
          )
          P.destroyAllResources
 
+-- | Acquire a read-only transaction.
+--
 -- @'read' p == p.read@
 read :: Pool mode -> A.Acquire (Transaction Read)
 read p = poolConnectionRead p >>= readTransaction'
 
+-- | Acquire a  read-write transaction where changes are finally commited to
+-- the database unless there is an unhandled exception during the transaction,
+-- in which case they are rolled back.
+--
 -- @'commit' p == p.commit@
 commit :: Pool Write -> A.Acquire (Transaction Write)
 commit (Pool_Write _ c _) = writeTransaction' Commit c
 
--- @'rollback' p == p.rollback@
+-- | Acquire a read-write transaction where changes are always rolled back.
+-- This is mostly useful for testing purposes.
+--
+-- Notice that an equivalent behavior can be achieved by
+-- 'Control.Exception.Safe.bracket'ing changes between 'Sq.savepoint' and
+-- 'Sq.rollbackTo' in a 'Commit'ting transaction. However, using 'Rollback' is
+-- much faster.
+--
+--  @'rollback' p == p.rollback@
 rollback :: Pool Write -> A.Acquire (Transaction Write)
 rollback (Pool_Write _ c _) = writeTransaction' Rollback c
 

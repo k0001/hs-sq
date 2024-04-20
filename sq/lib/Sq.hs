@@ -28,7 +28,6 @@ module Sq
 
     -- * Mode
    , Mode (..)
-   , Release (..)
 
     -- * Statement
    , Statement
@@ -56,19 +55,16 @@ module Sq
    , Name
    , name
 
-    -- * Connection
-   , Connection
-   , ConnectionId (..)
-
     -- * Transaction
    , Transaction
-   , TransactionId (..)
+   , read
+   , commit
+   , rollback
 
     -- * Savepoint
    , Savepoint
    , savepoint
-   , rollbackToSavepoint
-   , rollbacking
+   , rollbackTo
 
     -- * Rows
    , row
@@ -87,14 +83,10 @@ module Sq
    , writePool
    , readPool
    , tempPool
-   , read
-   , commit
-   , rollback
 
     -- * Resource management
     -- $resourceManagement
    , new
-   , new'
    , with
    , uith
 
@@ -142,18 +134,26 @@ import Sq.Support
 --------------------------------------------------------------------------------
 
 -- | 'A.Acquire' through 'R.MonadResource'.
+--
+-- @
+-- 'new' = 'fmap' 'snd' . "Data.Acquire".'A.allocateAcquire'
+-- @
 new :: (R.MonadResource m) => A.Acquire a -> m a
-new = fmap snd . new'
-
--- | 'A.Acquire' through 'R.MonadResource', with 'R.ReleaseKey'.
-new' :: (R.MonadResource m) => A.Acquire a -> m (R.ReleaseKey, a)
-new' = A.allocateAcquire
+new = fmap snd . A.allocateAcquire
 
 -- | 'A.Acquire' through 'Ex.MonadMask'.
+--
+-- @
+-- 'with' = "Control.Monad.Trans.Resource.Extra".'R.withAcquire'.
+-- @
 with :: (Ex.MonadMask m, MonadIO m) => A.Acquire a -> (a -> m b) -> m b
 with = R.withAcquire
 
 -- | 'A.Acquire' through 'R.MonadUnliftIO'.
+--
+-- @
+-- 'uith' = "Data.Acquire".'A.with'
+-- @
 uith :: (R.MonadUnliftIO m) => A.Acquire a -> (a -> m b) -> m b
 uith = A.with
 
