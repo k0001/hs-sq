@@ -20,6 +20,7 @@ import Data.Profunctor
 import Data.String
 import Data.Text qualified as T
 import Database.SQLite3 qualified as S
+import Di.Df1 qualified as Di
 import GHC.Records
 import GHC.Show
 import Language.Haskell.TH.Quote (QuasiQuoter (..))
@@ -34,6 +35,9 @@ import Sq.Output
 
 newtype SQL = SQL T.Text
    deriving newtype (Eq, Ord, Show, IsString, Semigroup, NFData)
+
+instance Di.ToMessage SQL where
+   message = Di.message . show
 
 instance HasField "text" SQL T.Text where getField = coerce
 

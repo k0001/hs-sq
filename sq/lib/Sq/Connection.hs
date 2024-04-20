@@ -4,11 +4,12 @@
 
 module Sq.Connection
    ( Connection
-   , acquireConnection
+   , connection
    , Transaction
    , Settings (..)
    , defaultSettings
-   , acquireTransaction
+   , readTransaction'
+   , writeTransaction'
    , row
    , rowMaybe
    , rowsZero
@@ -17,16 +18,13 @@ module Sq.Connection
    , rowsStream
    , ConnectionId (..)
    , TransactionId (..)
-   , LogMessage (..)
-   , LogMessageTransaction (..)
-   , LogMessageConnection (..)
+   , SavepointId (..)
    , Savepoint
    , savepoint
    , rollbackToSavepoint
    , rollbacking
    , ErrRows (..)
    , ErrStatement (..)
-   , defaultLogStderr
    ) where
 
 import Control.Applicative
@@ -35,18 +33,18 @@ import Control.Concurrent.Async qualified as Async
 import Control.Concurrent.STM
 import Control.DeepSeq
 import Control.Exception.Safe qualified as Ex
+import Control.Foldl qualified as F
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
-import Data.Bool
 import Data.Foldable
+import Data.Function (fix)
 import Data.Functor
 import Data.IORef
 import Data.Int
-import Data.List qualified as List
 import Data.List.NonEmpty qualified as NEL
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -54,27 +52,23 @@ import Data.Maybe
 import Data.Monoid
 import Data.Singletons
 import Data.Text qualified as T
-import Data.Text.Lazy.Builder qualified as TB
-import Data.Text.Lazy.IO qualified as TL
-import Data.Time qualified as Time
-import Data.Time.Format.ISO8601 qualified as Time
 import Data.Tuple
 import Data.Word
 import Database.SQLite3 qualified as S
 import Database.SQLite3.Bindings qualified as S (CDatabase, CStatement)
 import Database.SQLite3.Direct qualified as S (Database (..), Statement (..))
+import Di.Df1 qualified as Di
 import Foreign.C.Types (CInt (..))
 import Foreign.Marshal.Alloc (free, malloc)
 import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr)
 import Foreign.Storable
 import GHC.IO (evaluate, unsafeUnmask)
+import GHC.Records
 import GHC.Show
-import Numeric.Natural
 import Streaming qualified as Z
 import Streaming.Prelude qualified as Z
 import System.Clock qualified as Clock
-import System.IO qualified as IO
-import System.IO.Unsafe
+import System.Timeout (timeout)
 import Prelude hiding (Read, log)
 
 import Sq.Input
@@ -103,31 +97,6 @@ modeFlags = \case
 
 --------------------------------------------------------------------------------
 
-data LogMessageConnection = LogMessageConnection
-   { id :: ConnectionId
-   , mode :: Mode
-   }
-   deriving stock (Eq, Ord, Show)
-
-data LogMessageTransaction = LogMessageTransaction
-   { id :: TransactionId
-   , mode :: TransactionMode
-   }
-   deriving stock (Eq, Ord, Show)
-
-data LogMessage
-   = LogMessage
-      Time.UTCTime
-      T.Text
-      ( Maybe
-         ( LogMessageConnection
-         , Maybe LogMessageTransaction
-         )
-      )
-   deriving stock (Eq, Ord, Show)
-
---------------------------------------------------------------------------------
-
 data Settings = Settings
    { file :: FilePath
    -- ^ Database file path. Not an URI.
@@ -137,22 +106,11 @@ data Settings = Settings
    , vfs :: S.SQLVFS
    , timeout :: Word32
    -- ^ SQLite Busy Timeout in milliseconds.
-   , log :: LogMessage -> IO ()
    }
+   deriving stock (Eq, Show)
 
 instance NFData Settings where
-   rnf (Settings !_ !_ !_ !_) = ()
-
-instance Show Settings where
-   showsPrec n x =
-      showParen (n >= appPrec1) $
-         showString "Settings {file = "
-            . shows x.file
-            . showString ", vfs = "
-            . shows x.vfs
-            . showString ", timeout = "
-            . shows x.timeout
-            . showString ", log = ..}"
+   rnf (Settings !_ !_ !_) = ()
 
 defaultSettings :: FilePath -> Settings
 defaultSettings file =
@@ -160,7 +118,6 @@ defaultSettings file =
       { file
       , vfs = S.SQLVFSDefault
       , timeout = 120_000 -- 2 minutes
-      , log = mempty -- defaultLogStderr
       }
 
 --------------------------------------------------------------------------------
@@ -174,36 +131,32 @@ defaultSettings file =
 -- Note: We don't export 'Connection' directly to the public, because it's
 -- easier to export just 'Sq.Pool'.
 data Connection (mode :: Mode) = Connection
-   { id :: ConnectionId
-   , log :: Maybe LogMessageTransaction -> T.Text -> IO ()
+   { _id :: ConnectionId
+   , di :: Di.Df1
    , xconn :: TMVar (Maybe (ExclusiveConnection mode))
    -- ^ 'Nothing' if the connection has vanished.
    }
+
+instance HasField "id" (Connection mode) ConnectionId where
+   getField = (._id)
 
 instance NFData (Connection mode) where
    rnf (Connection !_ !_ !_) = ()
 
 instance Show (Connection mode) where
-   showsPrec n c =
-      showParen (n >= appPrec1) $
-         showString "Connection {id = " . shows c.id . showString ", ...}"
+   showsPrec _ c = showString "Connection{id = " . shows c.id . showChar '}'
 
-acquireConnection
-   :: forall mode. (SingI mode) => Settings -> A.Acquire (Connection mode)
-acquireConnection s = do
-   x <- acquireExclusiveConnection s
-   xconn <- R.mkAcquire1 (newTMVarIO (Just x)) \t ->
+connection
+   :: forall mode
+    . (SingI mode)
+   => Di.Df1
+   -> Settings
+   -> A.Acquire (Connection mode)
+connection di0 s = do
+   (di1, xc) <- exclusiveConnection di0 s
+   xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   let lmc = LogMessageConnection{id = x.id, mode = demote @mode}
-   pure
-      Connection
-         { xconn
-         , id = x.id
-         , log = \yt m -> do
-            Ex.handleAsync (\(_ :: Ex.SomeException) -> pure ()) do
-               u <- Time.getCurrentTime
-               s.log $ LogMessage u m $ Just (lmc, yt)
-         }
+   pure Connection{xconn, _id = xc.id, di = di1}
 
 --------------------------------------------------------------------------------
 
@@ -218,11 +171,8 @@ data ExclusiveConnection (mode :: Mode) = ExclusiveConnection
    }
 
 instance Show (ExclusiveConnection m) where
-   showsPrec n c =
-      showParen (n >= appPrec1) $
-         showString "ExclusiveConnection {id = "
-            . shows c.id
-            . showString ", ...}"
+   showsPrec _ x =
+      showString "ExclusiveConnection{id = " . shows x.id . showChar '}'
 
 run :: (MonadIO m) => ExclusiveConnection mode -> (S.Database -> IO x) -> m x
 run ExclusiveConnection{run = r} k = liftIO $ r k
@@ -232,13 +182,17 @@ run ExclusiveConnection{run = r} k = liftIO $ r k
 lockConnection :: Connection mode -> A.Acquire (ExclusiveConnection mode)
 lockConnection c =
    R.mkAcquire1
-      ( atomically do
-         takeTMVar c.xconn >>= \case
-            Just x -> pure x
-            Nothing ->
-               Ex.throwM $
-                  resourceVanishedWithCallStack
-                     "lockConnection"
+      ( warningOnException (Di.push "lock" c.di) do
+         y <- timeout 10_000_000 $ atomically do
+            takeTMVar c.xconn >>= \case
+               Just x -> pure x
+               Nothing ->
+                  Ex.throwM $
+                     resourceVanishedWithCallStack
+                        "lockConnection"
+         case y of
+            Just xc -> pure xc
+            Nothing -> Ex.throwString "Timeout"
       )
       (atomically . fmap (const ()) . tryPutTMVar c.xconn . Just)
 
@@ -248,60 +202,67 @@ data DatabaseMessage
       (S.Database -> IO x)
       (Either Ex.SomeException x -> IO ())
 
-logException :: T.Text -> (T.Text -> IO ()) -> IO a -> IO a
-logException prefix log act = Ex.withException act \e ->
-   log $ prefix <> ": " <> show' (e :: Ex.SomeException)
+warningOnException
+   :: (MonadIO m, Ex.MonadMask m)
+   => Di.Df1
+   -> m a
+   -> m a
+warningOnException di act = Ex.withException act \e ->
+   Di.warning di (e :: Ex.SomeException)
 
-acquireExclusiveConnection
+exclusiveConnection
    :: forall mode
     . (SingI mode)
-   => Settings
-   -> A.Acquire (ExclusiveConnection mode)
-acquireExclusiveConnection cs = do
-   cid :: ConnectionId <- newConnectionId
+   => Di.Df1
+   -> Settings
+   -> A.Acquire (Di.Df1, ExclusiveConnection mode)
+exclusiveConnection di0 cs = do
+   cId :: ConnectionId <- newConnectionId
+   let di1 = Di.attr "id" cId $ Di.push "connection" di0
    dms :: MVar DatabaseMessage <-
       R.mkAcquire1 newEmptyMVar (fmap (const ()) . tryTakeMVar)
-   let lmc = LogMessageConnection{id = cid, mode = demote @mode}
-       log :: T.Text -> IO ()
-       log = \m -> Ex.handleAsync (\(_ :: Ex.SomeException) -> pure ()) do
-         u <- Time.getCurrentTime
-         cs.log $ LogMessage u m $ Just (lmc, Nothing)
    abackground :: Async.Async () <-
       R.mkAcquire1
-         (Async.async (background log (takeMVar dms)))
+         (Async.async (background di1 (takeMVar dms)))
          Async.uninterruptibleCancel
    liftIO $ Async.link abackground
    statements :: IORef (Map SQL PreparedStatement) <-
       R.mkAcquire1 (newIORef mempty) \r ->
          atomicModifyIORef' r (mempty,) >>= traverse_ \ps ->
             Ex.tryAny (S.finalize ps.handle)
-   pure $
-      ExclusiveConnection
+   pure
+      ( di1
+      , ExclusiveConnection
          { statements
-         , id = cid
+         , id = cId
          , run = \ !act -> do
             mv <- newEmptyMVar
             putMVar dms $! DatabaseMessage act $ putMVar mv
             takeMVar mv >>= either Ex.throwM pure
          }
+      )
   where
-   background :: forall x. (T.Text -> IO ()) -> IO DatabaseMessage -> IO x
-   background log next = R.runResourceT do
-      liftIO $ log "Connecting"
-      (_, db) <-
+   background :: forall x. Di.Df1 -> IO DatabaseMessage -> IO x
+   background di1 next = R.runResourceT do
+      (_, db) <- do
          R.allocate
-            ( logException "Connecting failed" log do
-               S.open2 (T.pack cs.file) (modeFlags (demote @mode)) cs.vfs
+            ( do
+               let di2 = Di.push "connect" di1
+               db <- warningOnException di2 do
+                  S.open2 (T.pack cs.file) (modeFlags (demote @mode)) cs.vfs
+               Di.debug_ di2 "OK"
+               pure db
             )
             ( \db -> do
-               logException "Disconnecting failed" log do
+               let di2 = Di.push "disconnect" di1
+               warningOnException di1 do
                   Ex.finally
                      (Ex.uninterruptibleMask_ (S.interrupt db))
                      (S.close db)
-               log "Disconnected"
+               Di.debug_ di2 "OK"
             )
-      liftIO $ log "Connected"
-      setBusyHandler db cs.timeout
+      warningOnException (Di.push "set-busy-handler" di1) do
+         setBusyHandler db cs.timeout
       liftIO $
          traverse_
             (S.exec db)
@@ -362,79 +323,90 @@ setBusyHandler (S.Database pDB) tmaxMS = do
 
 --------------------------------------------------------------------------------
 
-newtype TransactionId = TransactionId Natural
-   deriving newtype (Eq, Ord, Show, NFData)
-
-newTransactionId :: (MonadIO m) => m TransactionId
-newTransactionId = TransactionId <$> newUnique
-
-newtype ConnectionId = ConnectionId Natural
-   deriving newtype (Eq, Ord, Show, NFData)
-
-newConnectionId :: (MonadIO m) => m ConnectionId
-newConnectionId = ConnectionId <$> newUnique
-
---------------------------------------------------------------------------------
-
 -- | A database transaction handle. It's safe to try to use this 'Connection'
 -- concurrently.
 --
 -- While the 'Transaction' is active, an exclusive lock is held on the
 -- underlying 'Connection'.
-data Transaction (mode :: TransactionMode) = forall cmode.
-    (ConnectionSupportsTransaction cmode mode, SingI cmode) =>
+data Transaction (mode :: Mode) = forall cmode.
+    (SubMode cmode mode) =>
    Transaction
-   { id :: TransactionId
-   , log :: T.Text -> IO ()
+   { _id :: TransactionId
+   , di :: Di.Df1
    , conn :: Connection cmode
+   , release :: Release
    }
 
-instance NFData (Transaction mode) where
-   rnf (Transaction !_ !_ !_) = ()
+instance Show (Transaction mode) where
+   showsPrec _ t =
+      showString "Transaction{id = "
+         . shows t.id
+         . showString ", release = "
+         . shows t.release
+         . showChar '}'
 
-acquireTransaction
-   :: forall tmode cmode
-    . (SingI tmode, SingI cmode, ConnectionSupportsTransaction cmode tmode)
-   => Connection cmode
-   -> A.Acquire (Transaction tmode)
-acquireTransaction c@Connection{} = do
+instance NFData (Transaction mode) where
+   rnf (Transaction !_ !_ !_ !_) = ()
+
+instance HasField "id" (Transaction mode) TransactionId where
+   getField = (._id)
+
+readTransaction'
+   :: (SubMode mode Read) => Connection mode -> A.Acquire (Transaction Read)
+readTransaction' c = do
    xc <- lockConnection c
-   tid <- newTransactionId
-   let tmode = demote @tmode :: TransactionMode
-       lmt = LogMessageTransaction{id = tid, mode = tmode}
-       log (t :: T.Text) = c.log (Just lmt) t
-       showe (e :: Ex.SomeException) = show' e
-       rollback (ye0 :: Maybe Ex.SomeException) = do
-         log $ "Rolling back" <> maybe "" (\e -> " because: " <> showe e) ye0
-         logException "Rolling back failed because" log do
-            run xc (flip S.exec "ROLLBACK")
-         log "Rolled back"
+   tId <- newTransactionId
+   let di1 = Di.attr "mode" Read $ Di.attr "id" tId $ Di.push "transaction" c.di
    R.mkAcquireType1
       ( do
-         log "Beginning"
-         let bmode = if tmode == Reading then "DEFERRED" else "IMMEDIATE"
-         logException "Beginning failed because" log do
-            run xc (flip S.exec ("BEGIN " <> bmode))
-         log "Begun"
+         let di2 = Di.push "begin" di1
+         warningOnException di2 $ run xc (flip S.exec "BEGIN DEFERRED")
+         Di.debug_ di2 "OK"
       )
-      ( const \case
-         A.ReleaseExceptionWith e -> rollback (Just e)
-         _
-            | tmode /= Committing -> rollback Nothing
-            | otherwise -> do
-               log "Committing"
-               logException "Commiting failed because" log do
-                  run xc (flip S.exec "COMMIT")
-               log "Committed"
+      ( \_ rt -> do
+         let di2 = Di.push "rollback" di1
+         for_ (releaseTypeException rt) \e ->
+            Di.notice di2 $ "Will rollback due to: " <> show e
+         warningOnException di2 $ run xc (flip S.exec "ROLLBACK")
+         Di.debug_ di2 "OK"
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   pure $
-      Transaction
-         { log
-         , id = tid
-         , conn = Connection{id = c.id, log = c.log, xconn}
-         }
+   pure $ Transaction{_id = tId, di = di1, conn = c{xconn}, release = Rollback}
+
+writeTransaction'
+   :: Release -> Connection Write -> A.Acquire (Transaction Write)
+writeTransaction' txrel c = do
+   xc <- lockConnection c
+   tId <- newTransactionId
+   let di1 =
+         Di.attr "release" txrel $
+            Di.attr "mode" Write $
+               Di.attr "id" tId $
+                  Di.push "transaction" c.di
+       rollback (ye :: Maybe Ex.SomeException) = do
+         let di2 = Di.push "rollback" di1
+         for_ ye \e -> Di.notice di2 $ "Will rollback due to: " <> show e
+         warningOnException di2 $ run xc (flip S.exec "ROLLBACK")
+         Di.debug_ di2 "OK"
+   R.mkAcquireType1
+      ( do
+         let di2 = Di.push "begin" di1
+         warningOnException di2 $ run xc (flip S.exec "BEGIN IMMEDIATE")
+         Di.debug_ di2 "OK"
+      )
+      ( \_ rt -> case releaseTypeException rt of
+         Nothing -> case txrel of
+            Commit -> do
+               let di2 = Di.push "commit" di1
+               warningOnException di2 $ run xc (flip S.exec "COMMIT")
+               Di.debug_ di2 "OK"
+            Rollback -> rollback Nothing
+         Just e -> rollback (Just e)
+      )
+   xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
+      atomically $ tryTakeTMVar t >> putTMVar t Nothing
+   pure $ Transaction{_id = tId, di = di1, conn = c{xconn}, release = txrel}
 
 --------------------------------------------------------------------------------
 
@@ -444,15 +416,18 @@ acquireTransaction c@Connection{} = do
 data PreparedStatement = PreparedStatement
    { handle :: S.Statement
    , columns :: Map Name S.ColumnIndex
+   , id :: StatementId
    , reprepares :: Int
    -- ^ The @SQLITE_STMTSTATUS_REPREPARE@ when @columns@ was generated.
    }
 
 acquirePreparedStatement
-   :: SQL
+   :: Di.Df1
+   -> SQL
    -> ExclusiveConnection mode
    -> A.Acquire PreparedStatement
-acquirePreparedStatement raw xconn =
+acquirePreparedStatement di0 raw xconn = do
+   let di1 = Di.push "statement" di0
    R.mkAcquire1
       ( do
          yps <- atomicModifyIORef' xconn.statements \m ->
@@ -463,13 +438,16 @@ acquirePreparedStatement raw xconn =
                if reprepares == ps.reprepares
                   then pure ps
                   else do
+                     Di.debug_ (Di.attr "id" ps.id di1) "Reprepared"
                      columns <- getStatementColumnIndexes ps.handle
                      pure ps{reprepares, columns}
             Nothing -> do
+               stId <- newStatementId
+               Di.debug (Di.attr "id" stId di1) $ "Preparing " <> show raw
                handle <- run xconn $ flip S.prepare raw.text
                reprepares <- getStatementStatusReprepare handle
                columns <- getStatementColumnIndexes handle
-               pure PreparedStatement{handle, reprepares, columns}
+               pure PreparedStatement{id = stId, handle, reprepares, columns}
       )
       \ps -> flip Ex.onException (S.finalize ps.handle) do
          S.reset ps.handle
@@ -534,9 +512,9 @@ data ErrRows
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
 row
-   :: (MonadIO m, TransactionCan smode tmode)
-   => A.Acquire (Transaction tmode)
-   -> Statement smode i o
+   :: (MonadIO m, SubMode t s)
+   => A.Acquire (Transaction t)
+   -> Statement s i o
    -> i
    -> m o
 row atx st i = liftIO do
@@ -546,36 +524,37 @@ row atx st i = liftIO do
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 0 row.
 rowsZero
-   :: (MonadIO m, TransactionCan smode tmode)
-   => A.Acquire (Transaction tmode)
-   -> Statement smode i o
+   :: (MonadIO m, SubMode t s)
+   => A.Acquire (Transaction t)
+   -> Statement s i o
    -> i
    -> m ()
-rowsZero atx st i = liftIO do
-   rowMaybe atx st i >>= \case
-      Nothing -> pure ()
-      Just _ -> Ex.throwM ErrRows_TooMany
+rowsZero atx st i = liftIO $ rowsFoldM f atx st i
+  where
+   f :: forall x. F.FoldM IO x ()
+   f = F.FoldM (\_ _ -> Ex.throwM ErrRows_TooMany) (pure ()) pure
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 1 row.
 rowMaybe
-   :: (MonadIO m, TransactionCan smode tmode)
-   => A.Acquire (Transaction tmode)
-   -> Statement smode i o
+   :: (MonadIO m, SubMode t s)
+   => A.Acquire (Transaction t)
+   -> Statement s i o
    -> i
    -> m (Maybe o)
-rowMaybe atx st i = liftIO $ R.runResourceT do
-   Z.next (rowsStream atx st i) >>= \case
-      Right (o, z1) ->
-         Z.next z1 >>= \case
-            Left () -> pure (Just o)
-            Right _ -> Ex.throwM ErrRows_TooMany
-      Left () -> pure Nothing
+rowMaybe atx st i = liftIO $ rowsFoldM f atx st i
+  where
+   f :: forall x. F.FoldM IO x (Maybe x)
+   f =
+      F.FoldM
+         (maybe (pure . Just) \_ _ -> Ex.throwM ErrRows_TooMany)
+         (pure Nothing)
+         pure
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
 rowsNonEmpty
-   :: (MonadIO m, TransactionCan smode tmode)
-   => A.Acquire (Transaction tmode)
-   -> Statement smode i o
+   :: (MonadIO m, SubMode t s)
+   => A.Acquire (Transaction t)
+   -> Statement s i o
    -> i
    -> m (Int64, NEL.NonEmpty o)
 rowsNonEmpty atx st i = liftIO do
@@ -588,12 +567,15 @@ rowsNonEmpty atx st i = liftIO do
 -- Holds an exclusive lock on the database connection temporarily, while the
 -- list is being constructed.
 rowsList
-   :: (MonadIO m, TransactionCan smode tmode)
-   => A.Acquire (Transaction tmode)
-   -> Statement smode i o
+   :: (MonadIO m, SubMode t s)
+   => A.Acquire (Transaction t)
+   -> Statement s i o
    -> i
    -> m (Int64, [o])
-rowsList atx st i =
+rowsList atx st i = liftIO do
+   rowsFoldM (F.generalize ((,) <$> F.genericLength <*> F.list)) atx st i
+
+{-
    liftIO
       $ R.runResourceT
       $ Z.fold_
@@ -601,6 +583,48 @@ rowsList atx st i =
          (0, id)
          (fmap ($ []))
       $ rowsStream atx st i
+-}
+
+-- Note: this can be implemented in terms of rowsStream, but it is faster this
+-- way because we can avoid per-row resource management.
+rowsFoldM
+   :: (MonadIO m, Ex.MonadMask m, SubMode t s)
+   => F.FoldM m o z
+   -> A.Acquire (Transaction t)
+   -> Statement s i o
+   -> i
+   -> m z
+rowsFoldM (F.FoldM !fstep !finit !fext) !atx !st !i = do
+   acc0 <- finit
+   R.withAcquire (transactionBoundPreparedStatement atx st i) \ps ->
+      flip fix acc0 \k !acc ->
+         liftIO (S.step ps.handle) >>= \case
+            S.Row -> do
+               eo <- liftIO $ runStatementOutput st \n ->
+                  traverse (S.column ps.handle) (Map.lookup n ps.columns)
+               either Ex.throwM (fstep acc >=> k) eo
+            S.Done -> fext acc
+
+transactionBoundPreparedStatement
+   :: (SubMode t s)
+   => A.Acquire (Transaction t)
+   -> Statement s i o
+   -> i
+   -> A.Acquire PreparedStatement
+transactionBoundPreparedStatement !atx !st !i = do
+   -- TODO: Could we safely prepare and bind a statement before acquiring
+   -- the transaction/connection lock? That would be more efficient.
+   binput <- liftIO $ either Ex.throwM evaluate $ runStatementInput st i
+   Transaction{conn, di = di0} <- atx
+   xconn <- lockConnection conn
+   qId <- newQueryId
+   let di1 = Di.attr "id" qId $ Di.push "query" di0
+   ps <- acquirePreparedStatement di1 st.sql xconn
+   let di2 = Di.attr "id" ps.id $ Di.push "statement" di1
+       kvs = runBoundInput binput
+   R.mkAcquire1 (S.bindNamed ps.handle kvs) \_ -> S.clearBindings ps.handle
+   Di.debug di2 $ "Bound " <> show kvs
+   pure ps
 
 -- | Stream of output rows.
 --
@@ -614,9 +638,9 @@ rowsList atx st i =
 -- resources associated with it will be released right away, meaning you can
 -- defer exiting @m@ until later.
 rowsStream
-   :: (R.MonadResource m, TransactionCan smode tmode)
-   => A.Acquire (Transaction tmode)
-   -> Statement smode i o
+   :: (R.MonadResource m, SubMode t s)
+   => A.Acquire (Transaction t)
+   -> Statement s i o
    -- ^ If you need the 'Transaction' to be automatically acquired and
    -- released, you may use 'acquireTransactionRead',
    -- 'acquireTransactionCommit', 'acquireTransactionRollback', or
@@ -624,18 +648,8 @@ rowsStream
    -> i
    -> Z.Stream (Z.Of o) m ()
 rowsStream atx !st i = do
-   binput <- liftIO $ either Ex.throwM evaluate $ runStatementInput st i
    (k, typs) <- lift $ A.allocateAcquire do
-      Transaction{conn, log} <- atx
-      liftIO $ log $ "Statement: " <> show' st.sql
-      xconn <- lockConnection conn
-      liftIO $ log $ "Acquiring prepared statement"
-      ps <- acquirePreparedStatement st.sql xconn
-      liftIO $ log $ "Acquired prepared statement"
-      liftIO $ log $ "Binding input"
-      R.mkAcquire1 (S.bindNamed ps.handle (runBoundInput binput)) \_ ->
-         S.clearBindings ps.handle
-      liftIO $ log $ "Bound input"
+      ps <- transactionBoundPreparedStatement atx st i
       typs <- R.mkAcquire1 (newTMVarIO (Just ps)) \typs -> do
          atomically $ tryTakeTMVar typs >> putTMVar typs Nothing
       pure (typs :: TMVar (Maybe PreparedStatement))
@@ -644,35 +658,48 @@ rowsStream atx !st i = do
          ( atomically do
             takeTMVar typs >>= \case
                Just ps -> pure ps
-               Nothing -> Ex.throwM $ resourceVanishedWithCallStack "Rows"
+               Nothing ->
+                  -- `m` was run before the `Z.Stream` was fully consumed.
+                  -- This is normal, we just want to throw an useful exception.
+                  Ex.throwM $ resourceVanishedWithCallStack "Rows"
          )
          (atomically . fmap (const ()) . tryPutTMVar typs . Just)
          \ps ->
             restore (S.step ps.handle) >>= \case
-               S.Done -> Left <$> R.releaseType k A.ReleaseEarly
                S.Row ->
                   either Ex.throwM (pure . Right) =<< restore do
                      runStatementOutput st \n ->
                         traverse (S.column ps.handle) (Map.lookup n ps.columns)
+               S.Done ->
+                  -- The `Z.Stream` finished before `m` was run, so we release
+                  -- the transaction early.
+                  Left <$> R.releaseType k A.ReleaseEarly
 
 --------------------------------------------------------------------------------
 
+data Savepoint = Savepoint
+   { id :: SavepointId
+   , rollback :: IO ()
+   }
 
-newtype Savepoint = Savepoint {rollback :: IO ()}
+instance NFData Savepoint where
+   rnf (Savepoint !_ !_) = ()
 
-savepoint
-   :: (MonadIO m, TransactionCan Write tmode)
-   => Transaction tmode
-   -> m Savepoint
-savepoint = \tx -> do
+instance Show Savepoint where
+   showsPrec _ x = showString "Savepoint{id = " . shows x.id . showChar '}'
+
+savepoint :: (MonadIO m) => Transaction Write -> m Savepoint
+savepoint Transaction{conn} = liftIO do
    spId <- newSavepointId
-   rowsZero (pure tx) (stSavepoint spId) ()
-   pure Savepoint{rollback = rowsZero (pure tx) (stRollbackTo spId) ()}
-  where
-   stSavepoint :: SavepointId -> Statement Write () ()
-   stSavepoint x = statement mempty mempty ("SAVEPOINT '" <> show' x <> "'")
-   stRollbackTo :: SavepointId -> Statement Write () ()
-   stRollbackTo x = statement mempty mempty ("ROLLBACK TO '" <> show' x <> "'")
+   R.withAcquire (lockConnection conn) \xc ->
+      run xc $ flip S.exec ("SAVEPOINT s" <> show' spId)
+   pure $
+      Savepoint
+         { id = spId
+         , rollback =
+            R.withAcquire (lockConnection conn) \xc ->
+               run xc $ flip S.exec ("ROLLBACK TO s" <> show' spId)
+         }
 
 rollbackToSavepoint :: (MonadIO m) => Savepoint -> m ()
 rollbackToSavepoint s = liftIO s.rollback
@@ -690,80 +717,37 @@ rollbackToSavepoint s = liftIO s.rollback
 -- 'Sq.with' ('rollbacking' ('pure' tx)) \\() -> do
 --     ...
 -- @
-rollbacking :: (TransactionCan Write tmode) => Transaction tmode -> A.Acquire ()
+rollbacking :: Transaction Write -> A.Acquire ()
 rollbacking tx = void $ R.mkAcquire1 (savepoint tx) rollbackToSavepoint
 
-{-
-savepoint
-   :: (TransactionCan Write tmode)
-   => Transaction tmode
-   -> A.Acquire Savepoint
-savepoint tx = do
-   spId <- newSavepointId
-   mvDone <- R.mkAcquire1 (newMVar False) (void . flip swapMVar True)
-   let rollback :: IO () =
-         Ex.bracket
-            (takeMVar mvDone)
-            ( \_ ->
-               -- Note that even if `stRollbackTo` fails, we set `mvDone` to
-               -- `True` so that `release` doesn't perform `stRelease`, which
-               -- would be terrible.
-               putMVar mvDone True
-            )
-            ( \case
-               False -> rowsZero (pure tx) stRollbackTo spId
-               True -> pure ()
-            )
-   let release :: IO () = modifyMVar_ mvDone \case
-         False -> rowsZero (pure tx) stRelease spId $> True
-         True -> pure True
-   R.mkAcquireType1
-      (rowsZero (pure tx) stSavepoint spId)
-      ( const \case
-         A.ReleaseExceptionWith _ -> rollback
-         _ -> release
-      )
-   pure Savepoint{rollback}
+--------------------------------------------------------------------------------
 
-stRelease :: Statement Write SavepointId ()
-stRelease = statement (show >$< "x") mempty "RELEASE $x"
--}
-
-newtype SavepointId = SavepointId Natural
-   deriving newtype (Eq, Ord, Show, NFData)
+newtype SavepointId = SavepointId Word64
+   deriving newtype (Eq, Ord, Show, NFData, Di.ToValue)
 
 newSavepointId :: (MonadIO m) => m SavepointId
 newSavepointId = SavepointId <$> newUnique
 
---------------------------------------------------------------------------------
+newtype StatementId = StatementId Word64
+   deriving newtype (Eq, Ord, Show, NFData, Di.ToValue)
 
-_defaultLogStderr_lock :: MVar ()
-_defaultLogStderr_lock = unsafePerformIO $ newMVar ()
-{-# NOINLINE _defaultLogStderr_lock #-}
+newStatementId :: (MonadIO m) => m StatementId
+newStatementId = StatementId <$> newUnique
 
-defaultLogStderr :: LogMessage -> IO ()
-defaultLogStderr (LogMessage u m y) = do
-   let !out =
-         TB.toLazyText $
-            mconcat $
-               List.intersperse " " (fmap (\(k, v) -> k <> "=" <> v) attrs)
-                  <> [" ", TB.fromText m]
-   withMVar _defaultLogStderr_lock \_ ->
-      TL.hPutStrLn IO.stderr out
-  where
-   attrs :: [(TB.Builder, TB.Builder)]
-   attrs =
-      ("time", TB.fromString (Time.iso8601Show u))
-         : do
-            (c, yt) <- maybeToList y
-            fc c <> (ft =<< maybeToList yt)
-   fc :: LogMessageConnection -> [(TB.Builder, TB.Builder)]
-   fc x =
-      [ ("connection-id", show' x.id)
-      , ("connection-mode", TB.fromText (T.toLower (show' x.mode)))
-      ]
-   ft :: LogMessageTransaction -> [(TB.Builder, TB.Builder)]
-   ft x =
-      [ ("transaction-id", show' x.id)
-      , ("transaction-mode", TB.fromText (T.toLower (show' x.mode)))
-      ]
+newtype TransactionId = TransactionId Word64
+   deriving newtype (Eq, Ord, Show, NFData, Di.ToValue)
+
+newTransactionId :: (MonadIO m) => m TransactionId
+newTransactionId = TransactionId <$> newUnique
+
+newtype ConnectionId = ConnectionId Word64
+   deriving newtype (Eq, Ord, Show, NFData, Di.ToValue)
+
+newConnectionId :: (MonadIO m) => m ConnectionId
+newConnectionId = ConnectionId <$> newUnique
+
+newtype QueryId = QueryId Word64
+   deriving newtype (Eq, Ord, Show, NFData, Di.ToValue)
+
+newQueryId :: (MonadIO m) => m QueryId
+newQueryId = QueryId <$> newUnique

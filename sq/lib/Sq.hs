@@ -28,7 +28,7 @@ module Sq
 
     -- * Mode
    , Mode (..)
-   , TransactionMode (..)
+   , Release (..)
 
     -- * Statement
    , Statement
@@ -123,6 +123,7 @@ import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
 import Data.Function
 import Database.SQLite3 qualified as S
+import Di.Df1 qualified as Di
 import System.FilePath
 import Prelude hiding (Read, read)
 
@@ -160,17 +161,22 @@ uith = A.with
 
 -- | Acquire a 'Pool' temporarily persisted in the file-system.
 -- It will be deleted once released. This can be useful for testing.
-tempPool :: A.Acquire (Pool Write)
-tempPool = do
+tempPool :: Di.Df1 -> A.Acquire (Pool Write)
+tempPool di0 = do
    d <- acquireTmpDir
-   pool $ defaultSettings (d </> "db.sqlite")
+   let di1 = Di.attr "mode" Write $ Di.push "pool" di0
+   pool di1 $ defaultSettings (d </> "db.sqlite")
 
-writePool :: Settings -> A.Acquire (Pool Write)
-writePool = pool
+writePool :: Di.Df1 -> Settings -> A.Acquire (Pool Write)
+writePool di0 s = do
+   let di1 = Di.attr "mode" Write $ Di.push "pool" di0
+   pool di1 s
 {-# INLINE writePool #-}
 
-readPool :: Settings -> A.Acquire (Pool Read)
-readPool = pool
+readPool :: Di.Df1 -> Settings -> A.Acquire (Pool Read)
+readPool di0 s = do
+   let di1 = Di.attr "mode" Read $ Di.push "pool" di0
+   pool di1 s
 {-# INLINE readPool #-}
 
 --------------------------------------------------------------------------------

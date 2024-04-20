@@ -6,6 +6,7 @@ import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire.Internal qualified as A
 import Data.Foldable
 import Data.Text qualified as T
+import Di qualified
 import Hedgehog qualified as H
 import Hedgehog.Gen qualified as H
 import Hedgehog.Range qualified as HR
@@ -19,9 +20,9 @@ import Sq.Test.Codec qualified
 
 --------------------------------------------------------------------------------
 
-tree :: TestTree
-tree =
-   withAcquire Sq.tempPool \iop ->
+tree :: Di.Df1 -> TestTree
+tree di =
+   withAcquire (Sq.tempPool di) \iop ->
       testGroup
          "sq"
          [ {- This code randomly hangs for some reason.
@@ -41,11 +42,11 @@ tree =
                 stRead = Sq.readStatement mempty "x" "SELECT x FROM t"
             pool <- liftIO iop
             xs :: [Int] <- H.forAll $ H.list (HR.constant 0 100) H.enumBounded
-            (ysLen, ys) <- liftIO $ Sq.with pool.commit \tx ->
-               Sq.with (Sq.rollbacking tx) \_ -> do
-                  Sq.rowsZero (pure tx) stCreate ()
-                  traverse_ (Sq.rowsZero (pure tx) stInsert) xs
-                  Sq.rowsList (pure tx) stRead ()
+            (ysLen, ys) <- liftIO $ Sq.with pool.rollback \tx -> do
+               -- Sq.with (Sq.rollbacking tx) \_ -> do
+               Sq.rowsZero (pure tx) stCreate ()
+               traverse_ (Sq.rowsZero (pure tx) stInsert) xs
+               Sq.rowsList (pure tx) stRead ()
             ysLen H.=== fromIntegral (length ys)
             xs H.=== ys
          ]

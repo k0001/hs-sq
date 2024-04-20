@@ -4,6 +4,7 @@ module Sq.Support
    , show'
    , newUnique
    , acquireTmpDir
+   , releaseTypeException
    , manyTill1
    ) where
 
@@ -16,9 +17,9 @@ import Data.Acquire qualified as A
 import Data.Function
 import Data.IORef
 import Data.String
+import Data.Word
 import GHC.IO.Exception
 import GHC.Stack
-import Numeric.Natural
 import System.Directory
 import System.FilePath
 import System.IO.Error (isAlreadyExistsError)
@@ -40,14 +41,17 @@ show' :: forall b a. (IsString b, Show a) => a -> b
 show' = fromString . show
 
 --------------------------------------------------------------------------------
+
+-- | Generate a 'Word64' unique within this OS process.
 --
+-- If once per nanosecond, it will take 548 years to run out of unique 'Word64'
+-- identifiers. Thus, we don't check whether for overflow.
+newUnique :: (MonadIO m) => m Word64
+newUnique = liftIO $ atomicModifyIORef' _iorefUnique \n -> (n + 1, n)
 
-newUnique :: (MonadIO m) => m Natural
-newUnique = liftIO $ atomicModifyIORef' iorefUnique \n -> (n + 1, n)
-
-iorefUnique :: IORef Natural
-iorefUnique = unsafePerformIO (newIORef 0)
-{-# NOINLINE iorefUnique #-}
+_iorefUnique :: IORef Word64
+_iorefUnique = unsafePerformIO (newIORef 0)
+{-# NOINLINE _iorefUnique #-}
 
 --------------------------------------------------------------------------------
 
@@ -61,6 +65,12 @@ acquireTmpDir = flip R.mkAcquire1 removeDirectoryRecursive do
          (guard . isAlreadyExistsError)
          (d1 <$ createDirectory d1)
          (const k)
+
+releaseTypeException :: A.ReleaseType -> Maybe Ex.SomeException
+releaseTypeException = \case
+   A.ReleaseNormal -> Nothing
+   A.ReleaseEarly -> Nothing
+   A.ReleaseExceptionWith e -> Just e
 
 --------------------------------------------------------------------------------
 

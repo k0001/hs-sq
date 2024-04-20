@@ -1,10 +1,10 @@
 { mkDerivation, async, async-pool, attoparsec, base, binary
 , bytestring, clock, containers, contravariant, criterion, deepseq
-, direct-sqlite, directory, exceptions, filepath, hedgehog, lib
-, profunctors, resource-pool, resourcet, resourcet-extra
-, safe-exceptions, singletons, singletons-th, stm, streaming, tasty
-, tasty-hedgehog, tasty-hunit, template-haskell, text, time
-, transformers
+, df1, di, di-core, di-df1, direct-sqlite, directory, exceptions
+, filepath, foldl, hedgehog, lib, profunctors, resource-pool
+, resourcet, resourcet-extra, safe-exceptions, singletons
+, singletons-th, stm, streaming, tasty, tasty-hedgehog, tasty-hunit
+, template-haskell, text, time, transformers
 }:
 mkDerivation {
   pname = "sq";
@@ -12,17 +12,17 @@ mkDerivation {
   src = ./.;
   libraryHaskellDepends = [
     async attoparsec base binary bytestring clock containers
-    contravariant deepseq direct-sqlite directory exceptions filepath
-    profunctors resource-pool resourcet resourcet-extra safe-exceptions
-    singletons singletons-th stm streaming template-haskell text time
-    transformers
+    contravariant deepseq di-core di-df1 direct-sqlite directory
+    exceptions filepath foldl profunctors resource-pool resourcet
+    resourcet-extra safe-exceptions singletons singletons-th stm
+    streaming template-haskell text time transformers
   ];
   testHaskellDepends = [
-    base bytestring hedgehog resourcet resourcet-extra safe-exceptions
-    tasty tasty-hedgehog tasty-hunit text time
+    base bytestring df1 di di-core hedgehog resourcet resourcet-extra
+    safe-exceptions tasty tasty-hedgehog tasty-hunit text time
   ];
   benchmarkHaskellDepends = [
-    async async-pool base containers criterion resourcet
+    async async-pool base containers criterion df1 di di-core resourcet
     resourcet-extra safe-exceptions stm
   ];
   homepage = "https://github.com/k0001/hs-sq";

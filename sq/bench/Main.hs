@@ -8,6 +8,9 @@ import Control.Monad.Trans.Resource.Extra qualified as R
 import Criterion.Main
 import Data.Acquire qualified as A
 import Data.IORef
+import Df1 qualified
+import Di qualified
+import Di.Core qualified
 import Sq qualified
 
 digitChar :: Int -> Char
@@ -87,11 +90,11 @@ stRead = Sq.readStatement "i" "x" "SELECT x FROM t WHERE x=$i"
 stDelete :: Sq.Statement Sq.Write Int Int
 stDelete = Sq.writeStatement "i" "x" "DELETE FROM t WHERE x=$i RETURNING x"
 
-withPoolTmp :: (Sq.Pool Sq.Write -> Benchmark) -> Benchmark
-withPoolTmp k =
+withPoolTmp :: Di.Df1 -> (Sq.Pool Sq.Write -> Benchmark) -> Benchmark
+withPoolTmp di k =
    envWithCleanup
       ( do
-         (pool, rel) <- R.withRestoreIO (R.unAcquire Sq.tempPool)
+         (pool, rel) <- R.withRestoreIO $ R.unAcquire $ Sq.tempPool di
          Sq.rowsZero pool.commit stCreate ()
          pure (pool, rel)
       )
@@ -99,10 +102,11 @@ withPoolTmp k =
       (\ ~(pool, _) -> k pool)
 
 main :: IO ()
-main =
+main = Di.new \di0 -> do
+   let di1 = Di.Core.filter (\l _ _ -> l >= Df1.Info) di0
    defaultMain
       [ bgroup
          "sq"
-         [ withPoolTmp \ ~pool -> run pool 100
+         [ withPoolTmp di1 \ ~pool -> run pool 100
          ]
       ]
