@@ -7,14 +7,16 @@ module Sq.Connection
    , connection
    , Transaction
    , Settings (..)
-   , defaultSettings
+   , settings
    , readTransaction'
    , writeTransaction'
-   , row
-   , rowMaybe
+   , rowsOne
+   , rowsMaybe
    , rowsZero
    , rowsList
    , rowsNonEmpty
+   , rowsFold
+   , rowsFoldM
    , rowsStream
    , ConnectionId (..)
    , TransactionId (..)
@@ -101,7 +103,7 @@ data Settings = Settings
    -- ^ Database file path. Not an URI.
    --
    -- Note: To keep things simple, native @:memory:@ SQLite databases are not
-   -- supported. Maybe use @tmpfs@ if you need that?
+   -- supported. Maybe use 'Sq.poolTemp' or @tmpfs@ if you need that?
    , vfs :: S.SQLVFS
    , timeout :: Word32
    -- ^ SQLite busy Timeout in milliseconds.
@@ -111,8 +113,12 @@ data Settings = Settings
 instance NFData Settings where
    rnf (Settings !_ !_ !_) = ()
 
-defaultSettings :: FilePath -> Settings
-defaultSettings file =
+-- | Default connection settings.
+settings
+   :: FilePath
+   -- ^ Database file path. Not an URI, not @:memory:@
+   -> Settings
+settings file =
    Settings
       { file
       , vfs = S.SQLVFSDefault
@@ -517,34 +523,45 @@ getStatementColumnIndexes st = do
       (S.ColumnIndex <$> enumFromTo 0 (ncols - 1))
 
 data ErrStatement
-   = ErrStatement_DuplicateColumnName BindingName
+   = -- | A same column name appears twice or more in the raw 'SQL'.
+     ErrStatement_DuplicateColumnName BindingName
    deriving stock (Eq, Show)
    deriving anyclass (Ex.Exception)
 
 --------------------------------------------------------------------------------
 
 data ErrRows
-   = ErrRows_TooFew
-   | ErrRows_TooMany
+   = -- | Fewer rows than requested were available.
+     ErrRows_TooFew
+   | -- | More rows than requested were available.
+     ErrRows_TooMany
    deriving stock (Eq, Show)
    deriving anyclass (Ex.Exception)
 
 -- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
-row
+rowsOne
    :: (MonadIO m, SubMode t s)
    => A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
+   --
+   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
+   -- already obatained a 'Transaction' by other means.
    -> Statement s i o
    -> i
    -> m o
-row atx st i = liftIO do
-   rowMaybe atx st i >>= \case
+rowsOne atx st i = liftIO do
+   rowsMaybe atx st i >>= \case
       Just o -> pure o
       Nothing -> Ex.throwM ErrRows_TooFew
 
--- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 0 row.
+-- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 0 rowsOne.
 rowsZero
    :: (MonadIO m, SubMode t s)
    => A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
+   --
+   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
+   -- already obatained a 'Transaction' by other means.
    -> Statement s i o
    -> i
    -> m ()
@@ -553,14 +570,18 @@ rowsZero atx st i = liftIO $ rowsFoldM f atx st i
    f :: forall x. F.FoldM IO x ()
    f = F.FoldM (\_ _ -> Ex.throwM ErrRows_TooMany) (pure ()) pure
 
--- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 1 row.
-rowMaybe
+-- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 1 rowsOne.
+rowsMaybe
    :: (MonadIO m, SubMode t s)
    => A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
+   --
+   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
+   -- already obatained a 'Transaction' by other means.
    -> Statement s i o
    -> i
    -> m (Maybe o)
-rowMaybe atx st i = liftIO $ rowsFoldM f atx st i
+rowsMaybe atx st i = liftIO $ rowsFoldM f atx st i
   where
    f :: forall x. F.FoldM IO x (Maybe x)
    f =
@@ -573,6 +594,10 @@ rowMaybe atx st i = liftIO $ rowsFoldM f atx st i
 rowsNonEmpty
    :: (MonadIO m, SubMode t s)
    => A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
+   --
+   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
+   -- already obatained a 'Transaction' by other means.
    -> Statement s i o
    -> i
    -> m (Int64, NEL.NonEmpty o)
@@ -588,28 +613,41 @@ rowsNonEmpty atx st i = liftIO do
 rowsList
    :: (MonadIO m, SubMode t s)
    => A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
+   --
+   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
+   -- already obatained a 'Transaction' by other means.
    -> Statement s i o
    -> i
    -> m (Int64, [o])
 rowsList atx st i = liftIO do
    rowsFoldM (F.generalize ((,) <$> F.genericLength <*> F.list)) atx st i
 
-{-
-   liftIO
-      $ R.runResourceT
-      $ Z.fold_
-         (\(!n, !acc) o -> (n + 1, acc . (o :)))
-         (0, id)
-         (fmap ($ []))
-      $ rowsStream atx st i
--}
+rowsFold
+   :: (MonadIO m, SubMode t s)
+   => F.Fold o z
+   -> A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
+   --
+   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
+   -- already obatained a 'Transaction' by other means.
+   -> Statement s i o
+   -> i
+   -> m z
+rowsFold f atx st i = liftIO do
+   rowsFoldM (F.generalize f) atx st i
 
--- Note: this can be implemented in terms of rowsStream, but it is faster this
--- way because we can avoid per-row resource management.
+-- Note: All of the rowsXxx functions can be implemented in terms of
+-- rowsStream, but it is faster to do it through this rowsFoldM
+-- because we can avoid per-row resource management.
 rowsFoldM
    :: (MonadIO m, Ex.MonadMask m, SubMode t s)
    => F.FoldM m o z
    -> A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
+   --
+   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
+   -- already obatained a 'Transaction' by other means.
    -> Statement s i o
    -> i
    -> m z
@@ -620,10 +658,7 @@ rowsFoldM (F.FoldM !fstep !finit !fext) !atx !st !i = do
          liftIO (S.step ps.handle) >>= \case
             S.Row -> do
                eo <- liftIO $ runStatementOutput st \n ->
-                  -- traverse (S.column ps.handle) (Map.lookup n ps.columns)
-                  case Map.lookup n ps.columns of
-                     Nothing -> Ex.throwString ("xxxxxxxxxxxxxxx: " <> show (n, ps.columns))
-                     Just x -> Just <$> S.column ps.handle x
+                  traverse (S.column ps.handle) (Map.lookup n ps.columns)
                either Ex.throwM (fstep acc >=> k) eo
             S.Done -> fext acc
 
@@ -650,25 +685,35 @@ transactionBoundPreparedStatement !atx !st !i = do
 
 -- | Stream of output rows.
 --
--- __An exclusive lock__ will be held on the database while this 'Z.Stream' is
--- being produced.
+-- An exclusive lock will be held on the 'Transaction' while the 'Z.Stream' is
+-- producing rows. This may not be a problem if we are streaming from a
+-- \''Read' 'Transaction' obtained from a 'Sq.Pool', because more
+-- 'Transaction's can be readily be obtained from said 'Sq.Pool' and used
+-- concurrently for other purposes. But if we are streaming from a \''Write'
+-- 'Transaction', then all other concurrent attempts to perform a \''Write'
+-- 'Transaction' will be delayed. With that in mind, consider this:
 --
--- __You must exit @m@__, with 'R.runResourceT' or similar, for the transaction
--- lock and related resources to be released.
+-- * The 'Transaction' lock is released automatically if the 'Z.Stream' is
+-- consumed until exhaustion.
 --
--- __But, as a convenience__, if the 'Z.Stream' is /fully/ consumed, the
--- resources associated with it will be released right away, meaning you can
--- defer exiting @m@ until later.
+-- * Otherwise, if you won't consume the 'Z.Stream' until exhaustion, then be
+-- sure to exit @m@ by means of 'R.runResourceT' or similar as soon as possible
+-- in order to release the 'Transaction' lock.
 rowsStream
    :: (R.MonadResource m, SubMode t s)
    => A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once the 'Z.Stream' starts
+   -- being consumed.
+   --
+   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
+   -- already obatained a 'Transaction' by other means.
    -> Statement s i o
-   -- ^ If you need the 'Transaction' to be automatically acquired and
-   -- released, you may use 'acquireTransactionRead',
-   -- 'acquireTransactionCommit', 'acquireTransactionRollback', or
-   -- similar here. Otherwise, just use 'pure'.
    -> i
    -> Z.Stream (Z.Of o) m ()
+   -- ^ A 'Z.Stream' from the @streaming@ library.
+   --
+   -- We use the @streaming@ library because it is fast and doesn't
+   -- add any transitive dependencies to this project.
 rowsStream atx !st i = do
    (k, typs) <- lift $ A.allocateAcquire do
       ps <- transactionBoundPreparedStatement atx st i

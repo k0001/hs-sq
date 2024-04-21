@@ -58,28 +58,39 @@ runInput = coerce
 --
 -- @
 -- 'Sq.writeStatement'
---         ('encode' \"x\" 'defaultEncode')
+--         ('encode' \"foo\" 'encodeDefault')
 --         'mempty'
---         \"INSERT INTO t (a) VALUES ($x)\"
---    :: ('DefaultEncode' a)
---    => 'Sq.Statement' 'Sq.Write' a ()
+--         \"INSERT INTO t (a) VALUES ($foo)\"
+--    :: ('EncodeDefault' x)
+--    => 'Sq.Statement' 'Sq.Write' x ()
 -- @
 --
 -- Multiple 'Input's can be combined:
 --
 -- @
 -- 'Sq.writeStatement'
---         ('divided' ('encode' \"x\" 'defaultEncode')
---                  ('encode' \"y\" 'defaultEncode'))
+--         ('divided' ('encode' \"foo\" 'encodeDefault')
+--                  ('encode' \"bar\" 'encodeDefault'))
 --         'mempty'
---         \"INSERT INTO t (a, b) VALUES ($x, $y)\"
---    :: ('DefaultEncode' x, 'DefaultEncode' y)
+--         \"INSERT INTO t (a, b) VALUES ($foo, $bar)\"
+--    :: ('EncodeDefault' x, 'EncodeDefault' y)
 --    => 'Sq.Statement' 'Sq.Write' (x, y) ()
 -- @
 --
--- Pro-tip: Consider using the 'IsString' instance.
+-- Pro-tip: Consider using the 'IsString' instance for 'Input',
+-- where for example @\"foo\"@ means @'encode' \"foo\" 'encodeDefault'@.
+-- That is, the last example could be written as follows:
+--
+-- @
+-- 'Sq.writeStatement'
+--         ('divided' \"foo\" \"bar\")
+--         'mempty'
+--         \"INSERT INTO t (a, b) VALUES ($foo, $bar)\"
+--    :: ('EncodeDefault' x, 'EncodeDefault' y)
+--    => 'Sq.Statement' 'Sq.Write' (x, y) ()
+-- @
 encode :: Name -> Encode i -> Input i
-encode n e = Input (Map.singleton (bindingName n) . runEncode e)
+encode n (Encode f) = Input (Map.singleton (bindingName n) . f)
 {-# INLINE encode #-}
 
 -- | Add a prefix to all the parameters in the 'Input', separated by @\__@
@@ -103,11 +114,9 @@ encode n e = Input (Map.singleton (bindingName n) . runEncode e)
 --         ('divided' ('input' \"p1\" pointInput)
 --                  ('input' \"p2\" pointInput))
 --         'mempty'
---         ['sql'|
---           INSERT INTO vectors (p1x, p1y,
---                                p2x, p2y)
---           VALUES ($p1\__x, $p1\__y,
---                   $p2\__x, $p2\__y) |]
+--         ['Sq.sql'|
+--           INSERT INTO vectors (ax, ay, bx, by)
+--           VALUES ($p1\__x, $p1\__y, $p2\__x, $p2\__y) |]
 --    :: 'Sq.Statement' 'Sq.Write' (Point, Point) ()
 -- @
 input :: Name -> Input i -> Input i
@@ -121,7 +130,7 @@ input n ba = Input \s ->
 --         \"a\"
 --         'mempty'
 --         \"INSERT INTO t (x) VALUES ($a)\"
---    :: ('DefaultEncode' a)
+--    :: ('EncodeDefault' a)
 --    => 'Sq.Statement' 'Sq.Write' a ()
 -- @
 --
@@ -132,11 +141,11 @@ input n ba = Input \s ->
 --         ('divided' \"a\" \"b\")
 --         'mempty'
 --         \"INSERT INTO t (x, y) VALUES ($a, $b)\"
---    :: ('DefaultEncode' a, 'DefaultEncode' b)
+--    :: ('EncodeDefault' a, 'EncodeDefault' b)
 --    => 'Sq.Statement' 'Sq.Write' (a, b) ()
 -- @
-instance (DefaultEncode i) => IsString (Input i) where
-   fromString s = encode (fromString s) defaultEncode
+instance (EncodeDefault i) => IsString (Input i) where
+   fromString s = encode (fromString s) encodeDefault
    {-# INLINE fromString #-}
 
 --------------------------------------------------------------------------------
@@ -152,6 +161,7 @@ bindInput ii i = fmap BoundInput do
          Right !d -> Right (k, d)
          Left e -> Left $ ErrInput bn e
 
+-- | See v'Encode'.
 data ErrInput = ErrInput BindingName ErrEncode
    deriving stock (Show)
    deriving anyclass (Ex.Exception)

@@ -1,10 +1,8 @@
 module Sq.Encoders
    ( Encode (..)
-   , runEncode
    , ErrEncode (..)
    , encodeRefine
-   , encodeRefineString
-   , DefaultEncode (..)
+   , EncodeDefault (..)
    , encodeMaybe
    , encodeEither
    , encodeSizedIntegral
@@ -14,7 +12,6 @@ module Sq.Encoders
 where
 
 import Control.Exception.Safe qualified as Ex
-import Control.Monad
 import Data.Bifunctor
 import Data.Binary.Put qualified as Bin
 import Data.Bits
@@ -43,50 +40,70 @@ import Sq.Null (Null)
 
 --------------------------------------------------------------------------------
 
-newtype Encode a = Encode (a -> Either ErrEncode S.SQLData)
+-- | How to encode a single Haskell value of type @a@ into a SQLite value.
+newtype Encode a
+   = -- | Encode a value of type @a@ as 'S.SQLData'.
+     --
+     -- Ideally, the type @a@ should be small enough that this function always
+     -- returns 'Right'. However, that can sometimes be annoying, so we allow
+     -- this function to fail with 'ErrEncoder' if necessary, in which case an
+     -- 'ErrInput' exception will be eventually thrown while trying to bind the
+     -- relevant 'Input' to a 'Statement'. For example, not all 'String's can be
+     -- safely encoded as a 'S.SQLText' because some non-unicode characters
+     -- will silently be lost in the conversion. So, we either don't have an
+     -- 'Encode'r for 'String' at all, which is annoying, or we have 'ErrEncode'
+     -- here to safely deal with those obscure corner cases.
+     Encode (a -> Either ErrEncode S.SQLData)
    deriving (Contravariant) via Op (Either ErrEncode S.SQLData)
 
-runEncode :: Encode a -> a -> Either ErrEncode S.SQLData
-runEncode = coerce
-{-# INLINE runEncode #-}
+unEncode :: Encode a -> a -> Either ErrEncode S.SQLData
+unEncode = coerce
+{-# INLINE unEncode #-}
 
+-- | See v'Encode'.
 newtype ErrEncode = ErrEncode Ex.SomeException
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
 --------------------------------------------------------------------------------
 
-class DefaultEncode a where
-   defaultEncode :: (HasCallStack) => Encode a
+-- | Default way to encode a Haskell value of type @a@ into a SQLite value.
+--
+-- If there there exist a 'Sq.DecodeDefault' value for @a@, then these two
+-- instances must roundtrip.
+class EncodeDefault a where
+   encodeDefault :: (HasCallStack) => Encode a
 
-encodeRefineString
-   :: (HasCallStack) => (s -> Either String a) -> Encode a -> Encode s
-encodeRefineString f = encodeRefine \s ->
-   case f s of
-      Right a -> Right a
+-- | A convenience function for refining an 'Encode'r through a function that
+-- may fail with a 'String' error message. The 'CallStack' is preserved.
+--
+-- If you need a more sophisticated refinement, use the 'Encode' constructor.
+encodeRefine
+   :: (HasCallStack)
+   => (a -> Either String b)
+   -> Encode b
+   -> Encode a
+encodeRefine f (Encode g) = Encode \a ->
+   case f a of
+      Right b -> g b
       Left e -> first ErrEncode (Ex.throwString e)
-
-encodeRefine :: (s -> Either ErrEncode a) -> Encode a -> Encode s
-encodeRefine f (Encode g) = Encode (f >=> g)
-{-# INLINE encodeRefine #-}
 
 --------------------------------------------------------------------------------
 -- Core encodes
 
 -- | Literal 'S.SQLData' 'Encode'.
-instance DefaultEncode S.SQLData where
-   defaultEncode = Encode Right
-   {-# INLINE defaultEncode #-}
-
+instance EncodeDefault S.SQLData where
+   encodeDefault = Encode Right
+   {-# INLINE encodeDefault #-}
 
 -- | 'S.TextColumn'.
-instance DefaultEncode T.Text where
-   defaultEncode = S.SQLText >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault T.Text where
+   encodeDefault = S.SQLText >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
 {- TODO  avoid encoding '\000' ?
 
-   defaultEncode = Encode \t ->
+   encodeDefault = Encode \t ->
       case T.elem '\000' t of
          False -> Right $ S.SQLText t
          True ->
@@ -95,35 +112,35 @@ instance DefaultEncode T.Text where
 -}
 
 -- | 'S.IntegerColumn'.
-instance DefaultEncode Int64 where
-   defaultEncode = S.SQLInteger >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Int64 where
+   encodeDefault = S.SQLInteger >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
 -- | 'S.FloatColumn'.
-instance DefaultEncode Double where
-   defaultEncode = S.SQLFloat >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Double where
+   encodeDefault = S.SQLFloat >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
 -- | 'S.BlobColumn'.
-instance DefaultEncode B.ByteString where
-   defaultEncode = S.SQLBlob >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault B.ByteString where
+   encodeDefault = S.SQLBlob >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
 -- | 'S.NullColumn'.
-instance DefaultEncode Null where
-   defaultEncode = const S.SQLNull >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Null where
+   encodeDefault = const S.SQLNull >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
 --------------------------------------------------------------------------------
 -- Extra encodes
 
-instance DefaultEncode Void where
-   defaultEncode = Encode absurd
+instance EncodeDefault Void where
+   encodeDefault = Encode absurd
 
 -- | See 'encodeMaybe'.
-instance (DefaultEncode a) => DefaultEncode (Maybe a) where
-   defaultEncode = encodeMaybe defaultEncode
-   {-# INLINE defaultEncode #-}
+instance (EncodeDefault a) => EncodeDefault (Maybe a) where
+   encodeDefault = encodeMaybe encodeDefault
+   {-# INLINE encodeDefault #-}
 
 -- | @a@'s 'S.ColumnType' if 'Just', otherwise 'S.NullColumn'.
 encodeMaybe :: Encode a -> Encode (Maybe a)
@@ -132,91 +149,91 @@ encodeMaybe (Encode f) = Encode $ maybe (Right S.SQLNull) f
 
 -- | See 'encodeEither'.
 instance
-   (DefaultEncode a, DefaultEncode b)
-   => DefaultEncode (Either a b)
+   (EncodeDefault a, EncodeDefault b)
+   => EncodeDefault (Either a b)
    where
-   defaultEncode = encodeEither defaultEncode defaultEncode
+   encodeDefault = encodeEither encodeDefault encodeDefault
 
 encodeEither :: Encode a -> Encode b -> Encode (Either a b)
 encodeEither (Encode fa) (Encode fb) = Encode $ either fa fb
 {-# INLINE encodeEither #-}
 
 -- | 'S.IntegerColumn'. Encodes 'False' as @0@ and 'True' as @1@.
-instance DefaultEncode Bool where
-   defaultEncode = bool 0 1 >$< defaultEncode @Int64
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Bool where
+   encodeDefault = bool 0 1 >$< encodeDefault @Int64
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Float where
-   defaultEncode = float2Double >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Float where
+   encodeDefault = float2Double >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Int8 where
-   defaultEncode = fromIntegral >$< defaultEncode @Int64
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Int8 where
+   encodeDefault = fromIntegral >$< encodeDefault @Int64
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Word8 where
-   defaultEncode = fromIntegral >$< defaultEncode @Int64
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Word8 where
+   encodeDefault = fromIntegral >$< encodeDefault @Int64
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Int16 where
-   defaultEncode = fromIntegral >$< defaultEncode @Int64
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Int16 where
+   encodeDefault = fromIntegral >$< encodeDefault @Int64
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Word16 where
-   defaultEncode = fromIntegral >$< defaultEncode @Int64
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Word16 where
+   encodeDefault = fromIntegral >$< encodeDefault @Int64
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Int32 where
-   defaultEncode = fromIntegral >$< defaultEncode @Int64
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Int32 where
+   encodeDefault = fromIntegral >$< encodeDefault @Int64
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Word32 where
-   defaultEncode = fromIntegral >$< defaultEncode @Int64
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Word32 where
+   encodeDefault = fromIntegral >$< encodeDefault @Int64
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Int where
-   defaultEncode = fromIntegral >$< defaultEncode @Int64
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Int where
+   encodeDefault = fromIntegral >$< encodeDefault @Int64
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Word where
-   defaultEncode = encodeSizedIntegral
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Word where
+   encodeDefault = encodeSizedIntegral
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Word64 where
-   defaultEncode = encodeSizedIntegral
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Word64 where
+   encodeDefault = encodeSizedIntegral
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Integer where
-   defaultEncode = encodeSizedIntegral
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Integer where
+   encodeDefault = encodeSizedIntegral
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Natural where
-   defaultEncode = encodeSizedIntegral
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Natural where
+   encodeDefault = encodeSizedIntegral
+   {-# INLINE encodeDefault #-}
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 encodeSizedIntegral :: (Integral a, Bits a, HasCallStack) => Encode a
 encodeSizedIntegral = Encode \a ->
    case toIntegralSized a of
-      Just i -> runEncode (defaultEncode @Int64) i
-      Nothing -> runEncode (defaultEncode @String) (show (toInteger a))
+      Just i -> unEncode (encodeDefault @Int64) i
+      Nothing -> unEncode (encodeDefault @String) (show (toInteger a))
 
-instance DefaultEncode TL.Text where
-   defaultEncode = TL.toStrict >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault TL.Text where
+   encodeDefault = TL.toStrict >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode TB.Builder where
-   defaultEncode = TB.toLazyText >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault TB.Builder where
+   encodeDefault = TB.toLazyText >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode Char where
-   defaultEncode = pure >$< defaultEncode @String
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault Char where
+   encodeDefault = pure >$< encodeDefault @String
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode String where
-   defaultEncode = Encode \xc ->
+instance EncodeDefault String where
+   encodeDefault = Encode \xc ->
       case List.find invalid xc of
-         Nothing -> runEncode defaultEncode (T.pack xc)
+         Nothing -> unEncode encodeDefault (T.pack xc)
          Just c ->
             first ErrEncode $
                Ex.throwString ("Invalid character " <> show c)
@@ -224,17 +241,17 @@ instance DefaultEncode String where
       invalid :: Char -> Bool
       invalid = \c -> '\55296' <= c && c <= '\57343'
 
-instance DefaultEncode BL.ByteString where
-   defaultEncode = BL.toStrict >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault BL.ByteString where
+   encodeDefault = BL.toStrict >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode BS.ShortByteString where
-   defaultEncode = BS.fromShort >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault BS.ShortByteString where
+   encodeDefault = BS.fromShort >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
-instance DefaultEncode BB.Builder where
-   defaultEncode = BB.toLazyByteString >$< defaultEncode
-   {-# INLINE defaultEncode #-}
+instance EncodeDefault BB.Builder where
+   encodeDefault = BB.toLazyByteString >$< encodeDefault
+   {-# INLINE encodeDefault #-}
 
 -- | ISO-8601 in a @'S.TextColumn'.
 --
@@ -246,18 +263,18 @@ instance DefaultEncode BB.Builder where
 -- millisenconds.
 --
 -- * __WARNING__: SQLite date and time functions don't support leap seconds.
-instance DefaultEncode Time.UTCTime where
-   defaultEncode =
+instance EncodeDefault Time.UTCTime where
+   encodeDefault =
       contramap
          (Time.iso8601Show . Time.utcToZonedTime Time.utc)
-         defaultEncode
+         encodeDefault
 
 --------------------------------------------------------------------------------
 
 encodeBinary :: (a -> Bin.Put) -> Encode a
-encodeBinary f = contramap (Bin.runPut . f) defaultEncode
+encodeBinary f = contramap (Bin.runPut . f) encodeDefault
 {-# INLINE encodeBinary #-}
 
 encodeShow :: (Show a) => Encode a
-encodeShow = show >$< defaultEncode
+encodeShow = show >$< encodeDefault
 {-# INLINE encodeShow #-}

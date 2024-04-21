@@ -2,55 +2,59 @@
 {-# LANGUAGE NoFieldSelectors #-}
 
 module Sq
-   ( -- * Value encode
-    Encode(..)
+   ( -- * Statement
+    Statement
+   , readStatement
+   , writeStatement
+   , bindStatement
+
+    -- ** SQL
+   , SQL
+   , sql
+
+    -- ** Input
+   , Input
+   , encode
+   , input
+
+    -- *** Encode
+   , Encode (..)
    , encodeRefine
-   , encodeRefineString
-   , DefaultEncode (..)
+   , EncodeDefault (..)
    , encodeMaybe
    , encodeEither
    , encodeSizedIntegral
    , encodeBinary
    , encodeShow
 
-    -- * Value decodes
-   , Decode(..)
+    -- ** Output
+   , Output
+   , decode
+   , output
+
+    -- *** Decode
+   , Decode (..)
    , decodeRefine
-   , decodeReffineString
-   , DefaultDecode (..)
+   , DecodeDefault (..)
    , decodeMaybe
    , decodeEither
    , decodeSizedIntegral
    , decodeBinary
    , decodeRead
 
-    -- * Mode
-   , Mode (..)
-
-    -- * Statement
-   , Statement
-   , readStatement
-   , writeStatement
-   , bindStatement
-
-    -- * Statement input
-   , Input
-   , encode
-   , input
-
-    -- * Statement output
-   , Output
-   , decode
-   , output
-
-    -- * Raw statements
-   , SQL
-   , sql
-
-    -- * Names
+    -- ** Name
    , Name
    , name
-   , BindingName
+
+    -- * Rows
+   , rowsOne
+   , rowsMaybe
+   , rowsZero
+   , rowsNonEmpty
+   , rowsList
+   , rowsFold
+   , rowsFoldM
+   , rowsStream
 
     -- * Transaction
    , Transaction
@@ -58,22 +62,10 @@ module Sq
    , commit
    , rollback
 
-    -- * Savepoint
+    -- ** Savepoint
    , Savepoint
    , savepoint
    , rollbackTo
-
-    -- * Rows
-   , row
-   , rowMaybe
-   , rowsZero
-   , rowsNonEmpty
-   , rowsList
-   , rowsStream
-
-    -- * Connection settings
-   , Settings (..)
-   , defaultSettings
 
     -- * Pool
    , Pool
@@ -81,14 +73,16 @@ module Sq
    , poolWrite
    , poolTemp
 
+    -- ** Settings
+   , Settings (..)
+   , settings
+
+
     -- * Resource management
     -- $resourceManagement
    , new
    , with
    , uith
-
-    -- * Null
-   , Null (..)
 
     -- * Errors
    , ErrEncode (..)
@@ -98,7 +92,10 @@ module Sq
    , ErrStatement (..)
    , ErrRows (..)
 
-    -- * Re-exports
+    -- * Miscellaneuos
+   , BindingName
+   , Mode (..)
+   , Null (..)
    , S.SQLData (..)
    , S.SQLVFS (..)
    )
@@ -129,6 +126,34 @@ import Sq.Statement
 import Sq.Support
 
 --------------------------------------------------------------------------------
+-- $resourceManagement
+--
+-- "Sq" relies heavily on 'A.Acquire' for safe resource management in light of
+-- concurrency and dependencies between resources. But as a user of "Sq", it is
+-- unlikely that you will want to deal with 'A.Acquire' directly.  We don't
+-- force any particulary resource management tool on you. Instead, we export
+-- three tools for you to adapt 'A.Acquire' to your needs:
+--
+-- * 'with' for integrating with 'Ex.MonadMask' from
+-- the @exceptions@ library.
+--
+-- * 'new' for integrating with 'R.MonadResource' from
+-- the @resourcet@ library.
+--
+-- * 'uith' for integrating with 'R.MonadUnliftIO' from
+-- the @unliftio@ library.
+--
+-- If you don't have any opinion about which of 'with', 'new' and 'with' to
+-- use, just use 'with'. Here is an example of how to use 'with' to acquire
+-- a new 'Pool' through 'poolWrite':
+--
+-- @
+-- 'with' ('poolWrite' ('settings' \"\/my\/db.sqlite\"))
+--     \\(__pool__ :: 'Pool' \''Write') ->
+--            /... Here use __pool__ as necessary./
+--            /... The resources associated with it will be/
+--            /... automatically released after leaving this scope./
+-- @
 
 -- | 'A.Acquire' through 'R.MonadResource'.
 --
@@ -165,7 +190,7 @@ poolTemp :: Di.Df1 -> A.Acquire (Pool Write)
 poolTemp di0 = do
    d <- acquireTmpDir
    let di1 = Di.attr "mode" Write $ Di.push "pool" di0
-   pool SWrite di1 $ defaultSettings (d </> "db.sqlite")
+   pool SWrite di1 $ settings (d </> "db.sqlite")
 
 -- | Acquire a read-'Write' 'Pool' according to the given 'Settings'.
 --

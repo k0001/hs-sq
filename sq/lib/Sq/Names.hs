@@ -14,6 +14,7 @@ module Sq.Names
 import Control.Applicative
 import Control.DeepSeq
 import Control.Monad
+import Data.List.NonEmpty (NonEmpty(..))
 import Data.Attoparsec.Text qualified as AT
 import Data.Char qualified as Ch
 import Data.Coerce
@@ -54,17 +55,13 @@ pName = flip (AT.<?>) "pName" do
 
 --------------------------------------------------------------------------------
 
-data BindingName = BindingName Name [Name]
-   deriving stock (Eq, Ord, Show)
+-- | A non-empty list of 'Name's that can be rendered as 'Sq.Input' or
+-- 'Sq.Output' parameters in a 'Sq.Statement'.
+newtype BindingName = BindingName (NonEmpty Name)
+   deriving newtype (Eq, Ord, Show, NFData, Semigroup)
 
 bindingName :: Name -> BindingName
-bindingName n = BindingName n []
-
-instance NFData BindingName where
-   rnf (BindingName n ns) = rnf n `seq` rnf ns
-
-instance Semigroup BindingName where
-   BindingName a as <> BindingName b bs = BindingName a (as <> (b : bs))
+bindingName = BindingName . pure
 
 --------------------------------------------------------------------------------
 
@@ -79,12 +76,12 @@ pInputBindingName :: AT.Parser BindingName
 pInputBindingName = flip (AT.<?>) "pInputBindingName" do
    void $ AT.char '$'
    AT.sepBy' pName "__" >>= \case
-      n : ns -> pure $ BindingName n ns
+      n : ns -> pure $ BindingName (n :| ns)
       [] -> empty
 
 -- | @foo__bar3__the_thing@
 renderOutputBindingName :: BindingName -> T.Text
-renderOutputBindingName (BindingName n ns) =
+renderOutputBindingName (BindingName (n :| ns)) =
    T.intercalate "__" $ fmap (.text) (n : ns)
 
 -- | @foo__bar3__the_thing@
@@ -94,5 +91,5 @@ parseOutputBindingName = AT.parseOnly (pOutputBindingName <* AT.endOfInput)
 pOutputBindingName :: AT.Parser BindingName
 pOutputBindingName = flip (AT.<?>) "pOutputBindingName" do
    AT.sepBy' pName "__" >>= \case
-      n : ns -> pure $ BindingName n ns
+      n : ns -> pure $ BindingName (n :| ns)
       [] -> empty

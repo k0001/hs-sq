@@ -26,9 +26,12 @@ data Output o
    | Output_Decode BindingName (Decode (Output o))
 
 data ErrOutput
-   = ErrOutput_ColumnValue BindingName ErrDecode
-   | ErrOutput_ColumnMissing BindingName
-   | ErrOutput_Fail Ex.SomeException
+   = -- | Error from v'Decode'.
+     ErrOutput_ColumnValue BindingName ErrDecode
+   | -- | Missing column name in the raw 'SQL'.
+     ErrOutput_ColumnMissing BindingName
+   | -- | Error from 'Ex.MonadThrow'.
+     ErrOutput_Fail Ex.SomeException
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
@@ -87,6 +90,6 @@ instance (Monoid o) => Monoid (Output o) where
    mempty = pure mempty
    {-# INLINE mempty #-}
 
-instance (DefaultDecode i) => IsString (Output i) where
-   fromString s = decode (fromString s) defaultDecode
+instance (DecodeDefault i) => IsString (Output i) where
+   fromString s = decode (fromString s) decodeDefault
    {-# INLINE fromString #-}

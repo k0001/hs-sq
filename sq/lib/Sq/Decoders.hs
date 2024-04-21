@@ -2,8 +2,7 @@ module Sq.Decoders
    ( Decode (..)
    , ErrDecode (..)
    , decodeRefine
-   , decodeReffineString
-   , DefaultDecode (..)
+   , DecodeDefault (..)
    , decodeMaybe
    , decodeEither
    , decodeSizedIntegral
@@ -22,7 +21,6 @@ import Data.Bits
 import Data.ByteString qualified as B
 import Data.ByteString.Builder.Prim.Internal (caseWordSize_32_64)
 import Data.ByteString.Lazy qualified as BL
-import Data.Coerce
 import Data.Int
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
@@ -41,7 +39,10 @@ import Sq.Null (Null)
 
 --------------------------------------------------------------------------------
 
-newtype Decode a = Decode (S.SQLData -> Either ErrDecode a)
+-- | How to decode a single SQLite value into a Haskell value of type @a@.
+newtype Decode a
+   = -- | Decode a 'S.SQLData' value into a value of type @a@.
+     Decode (S.SQLData -> Either ErrDecode a)
    deriving
       (Functor, Applicative, Monad)
       via ReaderT S.SQLData (Either ErrDecode)
@@ -78,6 +79,7 @@ instance MonadPlus Decode where
       either (\_ -> r s) pure (l s)
    {-# INLINE mplus #-}
 
+-- | See v'Decode'.
 data ErrDecode
    = -- | Got, expected.
      ErrDecode_Type S.ColumnType [S.ColumnType]
@@ -97,97 +99,102 @@ sqlDataColumnType = \case
 
 --------------------------------------------------------------------------------
 
-decodeReffineString
-   :: (HasCallStack) => (a -> Either String b) -> Decode a -> Decode b
-decodeReffineString f = decodeRefine \a ->
+-- | A convenience function for refining a 'Decode'r through a function that
+-- may fail with a 'String' error message. The 'CallStack' is preserved.
+--
+-- If you need a more sophisticated refinement, use the 'Decode' constructor.
+decodeRefine
+   :: (HasCallStack)
+   => (a -> Either String b)
+   -> Decode a
+   -> Decode b
+decodeRefine f (Decode g) = Decode \raw -> do
+   a <- g raw
    case f a of
       Right b -> Right b
       Left s -> first ErrDecode_Fail (Ex.throwString s)
 
-decodeRefine :: (a -> Either ErrDecode b) -> Decode a -> Decode b
-decodeRefine f (Decode g) = Decode (g >=> f)
-{-# INLINE decodeRefine #-}
-
 --------------------------------------------------------------------------------
 -- Core decodes
 
-class DefaultDecode a where
-   defaultDecode :: Decode a
+-- | Default way to decode a SQLite value into a Haskell value of type @a@.
+--
+-- If there there exist a 'Sq.EncodeDefault' value for @a@, then these two
+-- instances must roundtrip.
+class DecodeDefault a where
+   decodeDefault :: Decode a
 
 -- | Literal 'S.SQLData' 'Decode'.
-instance DefaultDecode S.SQLData where
-   defaultDecode = Decode Right
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault S.SQLData where
+   decodeDefault = Decode Right
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Int64 where
-   defaultDecode = Decode \case
+instance DecodeDefault Int64 where
+   decodeDefault = Decode \case
       S.SQLInteger x -> Right x
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.IntegerColumn]
 
-instance DefaultDecode Double where
-   defaultDecode = Decode \case
+instance DecodeDefault Double where
+   decodeDefault = Decode \case
       S.SQLFloat x -> Right x
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.FloatColumn]
 
-instance DefaultDecode T.Text where
-   defaultDecode = Decode \case
+instance DecodeDefault T.Text where
+   decodeDefault = Decode \case
       S.SQLText x -> Right x
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.TextColumn]
 
-instance DefaultDecode B.ByteString where
-   defaultDecode = Decode \case
+instance DecodeDefault B.ByteString where
+   decodeDefault = Decode \case
       S.SQLBlob x -> Right x
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.BlobColumn]
 
-instance DefaultDecode Null where
-   defaultDecode = Decode \case
+instance DecodeDefault Null where
+   decodeDefault = Decode \case
       S.SQLNull -> Right mempty
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.NullColumn]
 
 --------------------------------------------------------------------------------
 -- Extra decodes
 
-instance DefaultDecode TL.Text where
-   defaultDecode = TL.fromStrict <$> defaultDecode
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault TL.Text where
+   decodeDefault = TL.fromStrict <$> decodeDefault
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Char where
-   defaultDecode = flip decodeReffineString defaultDecode \t ->
+instance DecodeDefault Char where
+   decodeDefault = flip decodeRefine decodeDefault \t ->
       if T.length t == 1
          then Right (T.unsafeHead t)
          else Left "Expected single character string"
 
-instance DefaultDecode String where
-   defaultDecode = T.unpack <$> defaultDecode
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault String where
+   decodeDefault = T.unpack <$> decodeDefault
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode BL.ByteString where
-   defaultDecode = BL.fromStrict <$> defaultDecode
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault BL.ByteString where
+   decodeDefault = BL.fromStrict <$> decodeDefault
+   {-# INLINE decodeDefault #-}
 
 -- | See 'decodeMaybe'.
-instance (DefaultDecode a) => DefaultDecode (Maybe a) where
-   defaultDecode = decodeMaybe defaultDecode
-   {-# INLINE defaultDecode #-}
+instance (DecodeDefault a) => DecodeDefault (Maybe a) where
+   decodeDefault = decodeMaybe decodeDefault
+   {-# INLINE decodeDefault #-}
 
--- | Attempt to decode @a@ first, otherwise decode a 'S.NullColumn'
--- as 'Notthing'.
+-- | Attempt to decode @a@ first, otherwise attempt decode
+-- a 'S.NullColumn' as 'Nothing'.
 decodeMaybe :: Decode a -> Decode (Maybe a)
-decodeMaybe da = fmap Just da <|> fmap (\_ -> Nothing) (defaultDecode @Null)
+decodeMaybe da = fmap Just da <|> fmap (\_ -> Nothing) (decodeDefault @Null)
 {-# INLINE decodeMaybe #-}
 
 -- | See 'decodeEither'.
 instance
-   (DefaultDecode a, DefaultDecode b)
-   => DefaultDecode (Either a b)
+   (DecodeDefault a, DecodeDefault b)
+   => DecodeDefault (Either a b)
    where
-   defaultDecode = decodeEither defaultDecode defaultDecode
-   {-# INLINE defaultDecode #-}
+   decodeDefault = decodeEither decodeDefault decodeDefault
+   {-# INLINE decodeDefault #-}
 
--- | Attempt to decode @a@ first, otherwise attempt to decode @b@, otherwise
--- fail with @b@'s parsing error.
---
--- @
+-- | @
 -- 'decodeEither' da db = fmap 'Left' da '<|>' fmap 'Right' db
 -- @
 decodeEither :: Decode a -> Decode b -> Decode (Either a b)
@@ -196,8 +203,8 @@ decodeEither da db = fmap Left da <|> fmap Right db
 
 -- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'
 -- depicting a literal integer.
-instance DefaultDecode Integer where
-   defaultDecode = Decode \case
+instance DecodeDefault Integer where
+   decodeDefault = Decode \case
       S.SQLInteger i -> Right (fromIntegral i)
       S.SQLFloat d
          | not (isNaN d || isInfinite d)
@@ -215,57 +222,57 @@ instance DefaultDecode Integer where
 -- | 'S.IntegerColumn'.
 decodeSizedIntegral :: (Integral a, Bits a) => Decode a
 decodeSizedIntegral = do
-   i <- defaultDecode @Integer
+   i <- decodeDefault @Integer
    case toIntegralSized i of
       Just a -> pure a
       Nothing -> fail "Integral overflow or underflow"
 
-instance DefaultDecode Int8 where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Int8 where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Word8 where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Word8 where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Int16 where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Int16 where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Word16 where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Word16 where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Int32 where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Int32 where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Word32 where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Word32 where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Word where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Word where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Word64 where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Word64 where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Int where
-   defaultDecode =
+instance DecodeDefault Int where
+   decodeDefault =
       caseWordSize_32_64
          decodeSizedIntegral
-         (fromIntegral <$> defaultDecode @Int64)
-   {-# INLINE defaultDecode #-}
+         (fromIntegral <$> decodeDefault @Int64)
+   {-# INLINE decodeDefault #-}
 
-instance DefaultDecode Natural where
-   defaultDecode = decodeSizedIntegral
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Natural where
+   decodeDefault = decodeSizedIntegral
+   {-# INLINE decodeDefault #-}
 
 -- 'S.IntegerColumn' and 'S.FloatColumn' only.
-instance DefaultDecode Bool where
-   defaultDecode = Decode \case
+instance DecodeDefault Bool where
+   decodeDefault = Decode \case
       S.SQLInteger x -> Right (x /= 0)
       S.SQLFloat x -> Right (x /= 0)
       x ->
@@ -275,9 +282,9 @@ instance DefaultDecode Bool where
                [S.IntegerColumn, S.FloatColumn]
 
 -- | Like for 'Time.ZonedTime'.
-instance DefaultDecode Time.UTCTime where
-   defaultDecode = Time.zonedTimeToUTC <$> defaultDecode
-   {-# INLINE defaultDecode #-}
+instance DecodeDefault Time.UTCTime where
+   decodeDefault = Time.zonedTimeToUTC <$> decodeDefault
+   {-# INLINE decodeDefault #-}
 
 -- 'S.TextColumn' (ISO8601, or seconds since Epoch with optional decimal
 -- part of up to picosecond precission), or 'S.Integer' (seconds since Epoch
@@ -285,8 +292,8 @@ instance DefaultDecode Time.UTCTime where
 --
 -- TODO: Currently precission over picoseconds is successfully parsed but
 -- silently floored. Fix parser, and make it faster too.
-instance DefaultDecode Time.ZonedTime where
-   defaultDecode = Decode \case
+instance DecodeDefault Time.ZonedTime where
+   decodeDefault = Decode \case
       S.SQLText (T.unpack -> s)
          | Just zt <- Time.iso8601ParseM s -> Right zt
          | Just u <- Time.iso8601ParseM s ->
@@ -306,8 +313,8 @@ instance DefaultDecode Time.ZonedTime where
                (sqlDataColumnType x)
                [S.IntegerColumn, S.TextColumn]
 
-instance DefaultDecode Float where
-   defaultDecode = flip decodeReffineString defaultDecode \d -> do
+instance DecodeDefault Float where
+   decodeDefault = flip decodeRefine decodeDefault \d -> do
       let f = double2Float d
       if float2Double f == d
          then Right f
@@ -316,11 +323,11 @@ instance DefaultDecode Float where
 --------------------------------------------------------------------------------
 
 decodeBinary :: Bin.Get a -> Decode a
-decodeBinary ga = flip decodeReffineString defaultDecode \bl ->
+decodeBinary ga = flip decodeRefine decodeDefault \bl ->
    case Bin.runGetOrFail ga bl of
       Right (_, _, a) -> Right a
       Left (_, _, s) -> Left s
 
 decodeRead :: (Prelude.Read a) => Decode a
-decodeRead = decodeReffineString readEither defaultDecode
+decodeRead = decodeRefine readEither decodeDefault
 {-# INLINE decodeRead #-}
