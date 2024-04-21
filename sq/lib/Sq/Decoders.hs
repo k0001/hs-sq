@@ -1,9 +1,8 @@
 module Sq.Decoders
    ( Decode (..)
-   , runDecode
    , ErrDecode (..)
-   , refineDecode
-   , refineDecodeString
+   , decodeRefine
+   , decodeReffineString
    , DefaultDecode (..)
    , decodeMaybe
    , decodeEither
@@ -42,15 +41,10 @@ import Sq.Null (Null)
 
 --------------------------------------------------------------------------------
 
-newtype Decode a
-   = Decode (S.SQLData -> Either ErrDecode a)
+newtype Decode a = Decode (S.SQLData -> Either ErrDecode a)
    deriving
       (Functor, Applicative, Monad)
       via ReaderT S.SQLData (Either ErrDecode)
-
-runDecode :: Decode a -> S.SQLData -> Either ErrDecode a
-runDecode = coerce
-{-# INLINE runDecode #-}
 
 -- | @'mempty' = 'pure' 'mempty'@
 instance (Monoid a) => Monoid (Decode a) where
@@ -103,16 +97,16 @@ sqlDataColumnType = \case
 
 --------------------------------------------------------------------------------
 
-refineDecodeString
+decodeReffineString
    :: (HasCallStack) => (a -> Either String b) -> Decode a -> Decode b
-refineDecodeString f = refineDecode \a ->
+decodeReffineString f = decodeRefine \a ->
    case f a of
       Right b -> Right b
       Left s -> first ErrDecode_Fail (Ex.throwString s)
 
-refineDecode :: (a -> Either ErrDecode b) -> Decode a -> Decode b
-refineDecode f (Decode g) = Decode (g >=> f)
-{-# INLINE refineDecode #-}
+decodeRefine :: (a -> Either ErrDecode b) -> Decode a -> Decode b
+decodeRefine f (Decode g) = Decode (g >=> f)
+{-# INLINE decodeRefine #-}
 
 --------------------------------------------------------------------------------
 -- Core decodes
@@ -158,7 +152,7 @@ instance DefaultDecode TL.Text where
    {-# INLINE defaultDecode #-}
 
 instance DefaultDecode Char where
-   defaultDecode = flip refineDecodeString defaultDecode \t ->
+   defaultDecode = flip decodeReffineString defaultDecode \t ->
       if T.length t == 1
          then Right (T.unsafeHead t)
          else Left "Expected single character string"
@@ -313,7 +307,7 @@ instance DefaultDecode Time.ZonedTime where
                [S.IntegerColumn, S.TextColumn]
 
 instance DefaultDecode Float where
-   defaultDecode = flip refineDecodeString defaultDecode \d -> do
+   defaultDecode = flip decodeReffineString defaultDecode \d -> do
       let f = double2Float d
       if float2Double f == d
          then Right f
@@ -322,11 +316,11 @@ instance DefaultDecode Float where
 --------------------------------------------------------------------------------
 
 decodeBinary :: Bin.Get a -> Decode a
-decodeBinary ga = flip refineDecodeString defaultDecode \bl ->
+decodeBinary ga = flip decodeReffineString defaultDecode \bl ->
    case Bin.runGetOrFail ga bl of
       Right (_, _, a) -> Right a
       Left (_, _, s) -> Left s
 
 decodeRead :: (Prelude.Read a) => Decode a
-decodeRead = refineDecodeString readEither defaultDecode
+decodeRead = decodeReffineString readEither defaultDecode
 {-# INLINE decodeRead #-}

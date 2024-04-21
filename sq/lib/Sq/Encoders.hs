@@ -2,8 +2,8 @@ module Sq.Encoders
    ( Encode (..)
    , runEncode
    , ErrEncode (..)
-   , refineEncode
-   , refineEncodeString
+   , encodeRefine
+   , encodeRefineString
    , DefaultEncode (..)
    , encodeMaybe
    , encodeEither
@@ -59,16 +59,16 @@ newtype ErrEncode = ErrEncode Ex.SomeException
 class DefaultEncode a where
    defaultEncode :: (HasCallStack) => Encode a
 
-refineEncodeString
+encodeRefineString
    :: (HasCallStack) => (s -> Either String a) -> Encode a -> Encode s
-refineEncodeString f = refineEncode \s ->
+encodeRefineString f = encodeRefine \s ->
    case f s of
       Right a -> Right a
       Left e -> first ErrEncode (Ex.throwString e)
 
-refineEncode :: (s -> Either ErrEncode a) -> Encode a -> Encode s
-refineEncode f (Encode g) = Encode (f >=> g)
-{-# INLINE refineEncode #-}
+encodeRefine :: (s -> Either ErrEncode a) -> Encode a -> Encode s
+encodeRefine f (Encode g) = Encode (f >=> g)
+{-# INLINE encodeRefine #-}
 
 --------------------------------------------------------------------------------
 -- Core encodes

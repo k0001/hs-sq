@@ -3,10 +3,9 @@
 
 module Sq
    ( -- * Value encode
-    Encode
-   , runEncode
-   , refineEncode
-   , refineEncodeString
+    Encode(..)
+   , encodeRefine
+   , encodeRefineString
    , DefaultEncode (..)
    , encodeMaybe
    , encodeEither
@@ -15,10 +14,9 @@ module Sq
    , encodeShow
 
     -- * Value decodes
-   , Decode
-   , runDecode
-   , refineDecode
-   , refineDecodeString
+   , Decode(..)
+   , decodeRefine
+   , decodeReffineString
    , DefaultDecode (..)
    , decodeMaybe
    , decodeEither

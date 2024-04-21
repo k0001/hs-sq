@@ -48,9 +48,9 @@ runOutput
    -> Output o
    -> m (Either ErrOutput o)
 runOutput f = \case
-   Output_Decode bn vda -> do
+   Output_Decode bn (Decode vda) -> do
       f bn >>= \case
-         Just s -> case runDecode vda s of
+         Just s -> case vda s of
             Right d -> runOutput f d
             Left e -> pure $ Left $ ErrOutput_ColumnValue bn e
          Nothing -> pure $ Left $ ErrOutput_ColumnMissing bn
