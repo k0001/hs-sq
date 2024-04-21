@@ -23,16 +23,16 @@ import Sq.Names
 data Output o
    = Output_Pure o
    | Output_Fail Ex.SomeException
-   | Output_Decode BindingName (Decoder (Output o))
+   | Output_Decode BindingName (Decode (Output o))
 
 data ErrOutput
-   = ErrOutput_ColumnValue BindingName ErrDecoder
+   = ErrOutput_ColumnValue BindingName ErrDecode
    | ErrOutput_ColumnMissing BindingName
    | ErrOutput_Fail Ex.SomeException
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
-decode :: Name -> Decoder o -> Output o
+decode :: Name -> Decode o -> Output o
 decode n vda = Output_Decode (bindingName n) (Output_Pure <$> vda)
 {-# INLINE decode #-}
 
@@ -50,7 +50,7 @@ runOutput
 runOutput f = \case
    Output_Decode bn vda -> do
       f bn >>= \case
-         Just s -> case runDecoder vda s of
+         Just s -> case runDecode vda s of
             Right d -> runOutput f d
             Left e -> pure $ Left $ ErrOutput_ColumnValue bn e
          Nothing -> pure $ Left $ ErrOutput_ColumnMissing bn
@@ -87,6 +87,6 @@ instance (Monoid o) => Monoid (Output o) where
    mempty = pure mempty
    {-# INLINE mempty #-}
 
-instance (DefaultDecoder i) => IsString (Output i) where
-   fromString s = decode (fromString s) defaultDecoder
+instance (DefaultDecode i) => IsString (Output i) where
+   fromString s = decode (fromString s) defaultDecode
    {-# INLINE fromString #-}

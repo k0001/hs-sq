@@ -1,10 +1,10 @@
 module Sq.Decoders
-   ( Decoder (..)
-   , runDecoder
-   , ErrDecoder (..)
-   , refineDecoder
-   , refineDecoderString
-   , DefaultDecoder (..)
+   ( Decode (..)
+   , runDecode
+   , ErrDecode (..)
+   , refineDecode
+   , refineDecodeString
+   , DefaultDecode (..)
    , decodeMaybe
    , decodeEither
    , decodeSizedIntegral
@@ -42,52 +42,52 @@ import Sq.Null (Null)
 
 --------------------------------------------------------------------------------
 
-newtype Decoder a
-   = Decoder (S.SQLData -> Either ErrDecoder a)
+newtype Decode a
+   = Decode (S.SQLData -> Either ErrDecode a)
    deriving
       (Functor, Applicative, Monad)
-      via ReaderT S.SQLData (Either ErrDecoder)
+      via ReaderT S.SQLData (Either ErrDecode)
 
-runDecoder :: Decoder a -> S.SQLData -> Either ErrDecoder a
-runDecoder = coerce
-{-# INLINE runDecoder #-}
+runDecode :: Decode a -> S.SQLData -> Either ErrDecode a
+runDecode = coerce
+{-# INLINE runDecode #-}
 
 -- | @'mempty' = 'pure' 'mempty'@
-instance (Monoid a) => Monoid (Decoder a) where
+instance (Monoid a) => Monoid (Decode a) where
    mempty = pure mempty
    {-# INLINE mempty #-}
 
 -- | @('<>') == 'liftA2' ('<>')@
-instance (Semigroup a) => Semigroup (Decoder a) where
+instance (Semigroup a) => Semigroup (Decode a) where
    (<>) = liftA2 (<>)
    {-# INLINE (<>) #-}
 
-instance Ex.MonadThrow Decoder where
-   throwM = Decoder . const . Left . ErrDecoder_Fail . Ex.toException
+instance Ex.MonadThrow Decode where
+   throwM = Decode . const . Left . ErrDecode_Fail . Ex.toException
 
-instance MonadFail Decoder where
+instance MonadFail Decode where
    fail = Ex.throwString
    {-# INLINE fail #-}
 
 -- | Leftmost result on success, rightmost error on failure.
-instance Alternative Decoder where
+instance Alternative Decode where
    empty = fail "empty"
    {-# INLINE empty #-}
    (<|>) = mplus
    {-# INLINE (<|>) #-}
 
 -- | Leftmost result on success, rightmost error on failure.
-instance MonadPlus Decoder where
+instance MonadPlus Decode where
    mzero = fail "mzero"
    {-# INLINE mzero #-}
-   mplus (Decoder l) (Decoder r) = Decoder \s ->
+   mplus (Decode l) (Decode r) = Decode \s ->
       either (\_ -> r s) pure (l s)
    {-# INLINE mplus #-}
 
-data ErrDecoder
+data ErrDecode
    = -- | Got, expected.
-     ErrDecoder_Type S.ColumnType [S.ColumnType]
-   | ErrDecoder_Fail Ex.SomeException
+     ErrDecode_Type S.ColumnType [S.ColumnType]
+   | ErrDecode_Fail Ex.SomeException
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
@@ -103,92 +103,92 @@ sqlDataColumnType = \case
 
 --------------------------------------------------------------------------------
 
-refineDecoderString
-   :: (HasCallStack) => (a -> Either String b) -> Decoder a -> Decoder b
-refineDecoderString f = refineDecoder \a ->
+refineDecodeString
+   :: (HasCallStack) => (a -> Either String b) -> Decode a -> Decode b
+refineDecodeString f = refineDecode \a ->
    case f a of
       Right b -> Right b
-      Left s -> first ErrDecoder_Fail (Ex.throwString s)
+      Left s -> first ErrDecode_Fail (Ex.throwString s)
 
-refineDecoder :: (a -> Either ErrDecoder b) -> Decoder a -> Decoder b
-refineDecoder f (Decoder g) = Decoder (g >=> f)
-{-# INLINE refineDecoder #-}
+refineDecode :: (a -> Either ErrDecode b) -> Decode a -> Decode b
+refineDecode f (Decode g) = Decode (g >=> f)
+{-# INLINE refineDecode #-}
 
 --------------------------------------------------------------------------------
--- Core decoders
+-- Core decodes
 
-class DefaultDecoder a where
-   defaultDecoder :: Decoder a
+class DefaultDecode a where
+   defaultDecode :: Decode a
 
--- | Literal 'S.SQLData' 'Decoder'.
-instance DefaultDecoder S.SQLData where
-   defaultDecoder = Decoder Right
-   {-# INLINE defaultDecoder #-}
+-- | Literal 'S.SQLData' 'Decode'.
+instance DefaultDecode S.SQLData where
+   defaultDecode = Decode Right
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Int64 where
-   defaultDecoder = Decoder \case
+instance DefaultDecode Int64 where
+   defaultDecode = Decode \case
       S.SQLInteger x -> Right x
-      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.IntegerColumn]
+      x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.IntegerColumn]
 
-instance DefaultDecoder Double where
-   defaultDecoder = Decoder \case
+instance DefaultDecode Double where
+   defaultDecode = Decode \case
       S.SQLFloat x -> Right x
-      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.FloatColumn]
+      x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.FloatColumn]
 
-instance DefaultDecoder T.Text where
-   defaultDecoder = Decoder \case
+instance DefaultDecode T.Text where
+   defaultDecode = Decode \case
       S.SQLText x -> Right x
-      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.TextColumn]
+      x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.TextColumn]
 
-instance DefaultDecoder B.ByteString where
-   defaultDecoder = Decoder \case
+instance DefaultDecode B.ByteString where
+   defaultDecode = Decode \case
       S.SQLBlob x -> Right x
-      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.BlobColumn]
+      x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.BlobColumn]
 
-instance DefaultDecoder Null where
-   defaultDecoder = Decoder \case
+instance DefaultDecode Null where
+   defaultDecode = Decode \case
       S.SQLNull -> Right mempty
-      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) [S.NullColumn]
+      x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.NullColumn]
 
 --------------------------------------------------------------------------------
--- Extra decoders
+-- Extra decodes
 
-instance DefaultDecoder TL.Text where
-   defaultDecoder = TL.fromStrict <$> defaultDecoder
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode TL.Text where
+   defaultDecode = TL.fromStrict <$> defaultDecode
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Char where
-   defaultDecoder = flip refineDecoderString defaultDecoder \t ->
+instance DefaultDecode Char where
+   defaultDecode = flip refineDecodeString defaultDecode \t ->
       if T.length t == 1
          then Right (T.unsafeHead t)
          else Left "Expected single character string"
 
-instance DefaultDecoder String where
-   defaultDecoder = T.unpack <$> defaultDecoder
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode String where
+   defaultDecode = T.unpack <$> defaultDecode
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder BL.ByteString where
-   defaultDecoder = BL.fromStrict <$> defaultDecoder
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode BL.ByteString where
+   defaultDecode = BL.fromStrict <$> defaultDecode
+   {-# INLINE defaultDecode #-}
 
 -- | See 'decodeMaybe'.
-instance (DefaultDecoder a) => DefaultDecoder (Maybe a) where
-   defaultDecoder = decodeMaybe defaultDecoder
-   {-# INLINE defaultDecoder #-}
+instance (DefaultDecode a) => DefaultDecode (Maybe a) where
+   defaultDecode = decodeMaybe defaultDecode
+   {-# INLINE defaultDecode #-}
 
 -- | Attempt to decode @a@ first, otherwise decode a 'S.NullColumn'
 -- as 'Notthing'.
-decodeMaybe :: Decoder a -> Decoder (Maybe a)
-decodeMaybe da = fmap Just da <|> fmap (\_ -> Nothing) (defaultDecoder @Null)
+decodeMaybe :: Decode a -> Decode (Maybe a)
+decodeMaybe da = fmap Just da <|> fmap (\_ -> Nothing) (defaultDecode @Null)
 {-# INLINE decodeMaybe #-}
 
 -- | See 'decodeEither'.
 instance
-   (DefaultDecoder a, DefaultDecoder b)
-   => DefaultDecoder (Either a b)
+   (DefaultDecode a, DefaultDecode b)
+   => DefaultDecode (Either a b)
    where
-   defaultDecoder = decodeEither defaultDecoder defaultDecoder
-   {-# INLINE defaultDecoder #-}
+   defaultDecode = decodeEither defaultDecode defaultDecode
+   {-# INLINE defaultDecode #-}
 
 -- | Attempt to decode @a@ first, otherwise attempt to decode @b@, otherwise
 -- fail with @b@'s parsing error.
@@ -196,94 +196,94 @@ instance
 -- @
 -- 'decodeEither' da db = fmap 'Left' da '<|>' fmap 'Right' db
 -- @
-decodeEither :: Decoder a -> Decoder b -> Decoder (Either a b)
+decodeEither :: Decode a -> Decode b -> Decode (Either a b)
 decodeEither da db = fmap Left da <|> fmap Right db
 {-# INLINE decodeEither #-}
 
 -- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'
 -- depicting a literal integer.
-instance DefaultDecoder Integer where
-   defaultDecoder = Decoder \case
+instance DefaultDecode Integer where
+   defaultDecode = Decode \case
       S.SQLInteger i -> Right (fromIntegral i)
       S.SQLFloat d
          | not (isNaN d || isInfinite d)
          , (i, 0) <- properFraction d ->
             Right i
-         | otherwise -> first ErrDecoder_Fail do
+         | otherwise -> first ErrDecode_Fail do
             Ex.throwString "Not an integer"
       S.SQLText t
          | Just i <- readMaybe (T.unpack t) -> Right i
-         | otherwise -> first ErrDecoder_Fail do
+         | otherwise -> first ErrDecode_Fail do
             Ex.throwString "Not an integer"
-      x -> Left $ ErrDecoder_Type (sqlDataColumnType x) do
+      x -> Left $ ErrDecode_Type (sqlDataColumnType x) do
          [S.IntegerColumn, S.FloatColumn, S.TextColumn]
 
 -- | 'S.IntegerColumn'.
-decodeSizedIntegral :: (Integral a, Bits a) => Decoder a
+decodeSizedIntegral :: (Integral a, Bits a) => Decode a
 decodeSizedIntegral = do
-   i <- defaultDecoder @Integer
+   i <- defaultDecode @Integer
    case toIntegralSized i of
       Just a -> pure a
       Nothing -> fail "Integral overflow or underflow"
 
-instance DefaultDecoder Int8 where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Int8 where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Word8 where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Word8 where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Int16 where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Int16 where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Word16 where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Word16 where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Int32 where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Int32 where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Word32 where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Word32 where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Word where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Word where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Word64 where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Word64 where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Int where
-   defaultDecoder =
+instance DefaultDecode Int where
+   defaultDecode =
       caseWordSize_32_64
          decodeSizedIntegral
-         (fromIntegral <$> defaultDecoder @Int64)
-   {-# INLINE defaultDecoder #-}
+         (fromIntegral <$> defaultDecode @Int64)
+   {-# INLINE defaultDecode #-}
 
-instance DefaultDecoder Natural where
-   defaultDecoder = decodeSizedIntegral
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Natural where
+   defaultDecode = decodeSizedIntegral
+   {-# INLINE defaultDecode #-}
 
 -- 'S.IntegerColumn' and 'S.FloatColumn' only.
-instance DefaultDecoder Bool where
-   defaultDecoder = Decoder \case
+instance DefaultDecode Bool where
+   defaultDecode = Decode \case
       S.SQLInteger x -> Right (x /= 0)
       S.SQLFloat x -> Right (x /= 0)
       x ->
          Left $
-            ErrDecoder_Type
+            ErrDecode_Type
                (sqlDataColumnType x)
                [S.IntegerColumn, S.FloatColumn]
 
 -- | Like for 'Time.ZonedTime'.
-instance DefaultDecoder Time.UTCTime where
-   defaultDecoder = Time.zonedTimeToUTC <$> defaultDecoder
-   {-# INLINE defaultDecoder #-}
+instance DefaultDecode Time.UTCTime where
+   defaultDecode = Time.zonedTimeToUTC <$> defaultDecode
+   {-# INLINE defaultDecode #-}
 
 -- 'S.TextColumn' (ISO8601, or seconds since Epoch with optional decimal
 -- part of up to picosecond precission), or 'S.Integer' (seconds since Epoch
@@ -291,8 +291,8 @@ instance DefaultDecoder Time.UTCTime where
 --
 -- TODO: Currently precission over picoseconds is successfully parsed but
 -- silently floored. Fix parser, and make it faster too.
-instance DefaultDecoder Time.ZonedTime where
-   defaultDecoder = Decoder \case
+instance DefaultDecode Time.ZonedTime where
+   defaultDecode = Decode \case
       S.SQLText (T.unpack -> s)
          | Just zt <- Time.iso8601ParseM s -> Right zt
          | Just u <- Time.iso8601ParseM s ->
@@ -300,7 +300,7 @@ instance DefaultDecoder Time.ZonedTime where
          | Just u <- Time.parseTimeM False Time.defaultTimeLocale "%s%Q" s ->
             Right $ Time.utcToZonedTime Time.utc u
          | otherwise ->
-            first ErrDecoder_Fail $ Ex.throwString $ "Invalid timestamp format: " <> show s
+            first ErrDecode_Fail $ Ex.throwString $ "Invalid timestamp format: " <> show s
       S.SQLInteger i ->
          Right $
             Time.utcToZonedTime Time.utc $
@@ -308,12 +308,12 @@ instance DefaultDecoder Time.ZonedTime where
                   fromIntegral i
       x ->
          Left $
-            ErrDecoder_Type
+            ErrDecode_Type
                (sqlDataColumnType x)
                [S.IntegerColumn, S.TextColumn]
 
-instance DefaultDecoder Float where
-   defaultDecoder = flip refineDecoderString defaultDecoder \d -> do
+instance DefaultDecode Float where
+   defaultDecode = flip refineDecodeString defaultDecode \d -> do
       let f = double2Float d
       if float2Double f == d
          then Right f
@@ -321,12 +321,12 @@ instance DefaultDecoder Float where
 
 --------------------------------------------------------------------------------
 
-decodeBinary :: Bin.Get a -> Decoder a
-decodeBinary ga = flip refineDecoderString defaultDecoder \bl ->
+decodeBinary :: Bin.Get a -> Decode a
+decodeBinary ga = flip refineDecodeString defaultDecode \bl ->
    case Bin.runGetOrFail ga bl of
       Right (_, _, a) -> Right a
       Left (_, _, s) -> Left s
 
-decodeRead :: (Prelude.Read a) => Decoder a
-decodeRead = refineDecoderString readEither defaultDecoder
+decodeRead :: (Prelude.Read a) => Decode a
+decodeRead = refineDecodeString readEither defaultDecode
 {-# INLINE decodeRead #-}

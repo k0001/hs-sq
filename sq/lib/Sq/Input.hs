@@ -33,7 +33,7 @@ import Sq.Names
 --
 -- * Compose with 'input', 'Contravariant', 'Divisible', 'Decidable',
 -- 'Semigroup' or 'Monoid'
-newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncoder S.SQLData))
+newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncode S.SQLData))
    deriving newtype
       ( Semigroup
         -- ^ Left-biased in case of overlapping 'BindingName's.
@@ -47,9 +47,9 @@ newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncoder S.SQLData))
         -- ^ Left-biased in case of overlapping 'BindingName's.
       , Decidable
       )
-      via Op (Map.Map BindingName (Either ErrEncoder S.SQLData))
+      via Op (Map.Map BindingName (Either ErrEncode S.SQLData))
 
-runInput :: Input i -> i -> Map.Map BindingName (Either ErrEncoder S.SQLData)
+runInput :: Input i -> i -> Map.Map BindingName (Either ErrEncode S.SQLData)
 runInput = coerce
 {-# INLINE runInput #-}
 
@@ -58,10 +58,10 @@ runInput = coerce
 --
 -- @
 -- 'Sq.writeStatement'
---         ('encode' \"x\" 'defaultEncoder')
+--         ('encode' \"x\" 'defaultEncode')
 --         'mempty'
 --         \"INSERT INTO t (a) VALUES ($x)\"
---    :: ('DefaultEncoder' a)
+--    :: ('DefaultEncode' a)
 --    => 'Sq.Statement' 'Sq.Write' a ()
 -- @
 --
@@ -69,17 +69,17 @@ runInput = coerce
 --
 -- @
 -- 'Sq.writeStatement'
---         ('divided' ('encode' \"x\" 'defaultEncoder')
---                  ('encode' \"y\" 'defaultEncoder'))
+--         ('divided' ('encode' \"x\" 'defaultEncode')
+--                  ('encode' \"y\" 'defaultEncode'))
 --         'mempty'
 --         \"INSERT INTO t (a, b) VALUES ($x, $y)\"
---    :: ('DefaultEncoder' x, 'DefaultEncoder' y)
+--    :: ('DefaultEncode' x, 'DefaultEncode' y)
 --    => 'Sq.Statement' 'Sq.Write' (x, y) ()
 -- @
 --
 -- Pro-tip: Consider using the 'IsString' instance.
-encode :: Name -> Encoder i -> Input i
-encode n e = Input (Map.singleton (bindingName n) . runEncoder e)
+encode :: Name -> Encode i -> Input i
+encode n e = Input (Map.singleton (bindingName n) . runEncode e)
 {-# INLINE encode #-}
 
 -- | Add a prefix to all the parameters in the 'Input', separated by @\__@
@@ -121,7 +121,7 @@ input n ba = Input \s ->
 --         \"a\"
 --         'mempty'
 --         \"INSERT INTO t (x) VALUES ($a)\"
---    :: ('DefaultEncoder' a)
+--    :: ('DefaultEncode' a)
 --    => 'Sq.Statement' 'Sq.Write' a ()
 -- @
 --
@@ -132,11 +132,11 @@ input n ba = Input \s ->
 --         ('divided' \"a\" \"b\")
 --         'mempty'
 --         \"INSERT INTO t (x, y) VALUES ($a, $b)\"
---    :: ('DefaultEncoder' a, 'DefaultEncoder' b)
+--    :: ('DefaultEncode' a, 'DefaultEncode' b)
 --    => 'Sq.Statement' 'Sq.Write' (a, b) ()
 -- @
-instance (DefaultEncoder i) => IsString (Input i) where
-   fromString s = encode (fromString s) defaultEncoder
+instance (DefaultEncode i) => IsString (Input i) where
+   fromString s = encode (fromString s) defaultEncode
    {-# INLINE fromString #-}
 
 --------------------------------------------------------------------------------
@@ -152,7 +152,7 @@ bindInput ii i = fmap BoundInput do
          Right !d -> Right (k, d)
          Left e -> Left $ ErrInput bn e
 
-data ErrInput = ErrInput BindingName ErrEncoder
+data ErrInput = ErrInput BindingName ErrEncode
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 

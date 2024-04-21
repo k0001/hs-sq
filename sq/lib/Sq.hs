@@ -2,24 +2,24 @@
 {-# LANGUAGE NoFieldSelectors #-}
 
 module Sq
-   ( -- * Value encoder
-    Encoder
-   , runEncoder
-   , refineEncoder
-   , refineEncoderString
-   , DefaultEncoder (..)
+   ( -- * Value encode
+    Encode
+   , runEncode
+   , refineEncode
+   , refineEncodeString
+   , DefaultEncode (..)
    , encodeMaybe
    , encodeEither
    , encodeSizedIntegral
    , encodeBinary
    , encodeShow
 
-    -- * Value decoders
-   , Decoder
-   , runDecoder
-   , refineDecoder
-   , refineDecoderString
-   , DefaultDecoder (..)
+    -- * Value decodes
+   , Decode
+   , runDecode
+   , refineDecode
+   , refineDecodeString
+   , DefaultDecode (..)
    , decodeMaybe
    , decodeEither
    , decodeSizedIntegral
@@ -93,9 +93,9 @@ module Sq
    , Null (..)
 
     -- * Errors
-   , ErrEncoder (..)
+   , ErrEncode (..)
    , ErrInput (..)
-   , ErrDecoder (..)
+   , ErrDecode (..)
    , ErrOutput (..)
    , ErrStatement (..)
    , ErrRows (..)
