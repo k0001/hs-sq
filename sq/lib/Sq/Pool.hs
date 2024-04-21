@@ -19,7 +19,6 @@ import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
 import Data.Acquire.Internal qualified as A
 import Data.Pool qualified as P
-import Data.Singletons
 import Data.Word
 import Di.Df1 qualified as Di
 import GHC.Records
@@ -96,24 +95,26 @@ instance
    getField = rollback
 
 pool
-   :: forall mode
-    . (SingI mode)
-   => Di.Df1
+   :: SMode mode
+   -> Di.Df1
    -> Settings
    -> A.Acquire (Pool mode)
-pool di0 cs = do
+pool smode di0 cs = do
    pId <- newPoolId
    let di1 = Di.attr "id" pId di0
-   case sing @mode of
-      SRead -> Pool_Read pId <$> ppoolConnRead di1
-      SWrite -> Pool_Write pId <$> connection di1 cs <*> ppoolConnRead di1
+   ppcr <- ppoolConnRead di1
+   case smode of
+      SRead -> pure $ Pool_Read pId ppcr
+      SWrite -> do
+         cw <- connection SWrite di1 cs
+         pure $ Pool_Write pId cw ppcr
   where
    ppoolConnRead
       :: Di.Df1 -> A.Acquire (P.Pool (A.Allocated (Connection Read)))
    ppoolConnRead di1 =
       R.acquire1
          ( \res -> do
-            let A.Acquire f = connection di1 cs
+            let A.Acquire f = connection SRead di1 cs
             maxResources <- max 8 <$> getNumCapabilities
             P.newPool $
                P.defaultPoolConfig
@@ -136,19 +137,19 @@ read p = poolConnectionRead p >>= readTransaction'
 --
 -- @'commit' p == p.commit@
 commit :: Pool Write -> A.Acquire (Transaction Write)
-commit (Pool_Write _ c _) = writeTransaction' Commit c
+commit (Pool_Write _ c _) = writeTransaction' True c
 
 -- | Acquire a read-write transaction where changes are always rolled back.
 -- This is mostly useful for testing purposes.
 --
 -- Notice that an equivalent behavior can be achieved by
 -- 'Control.Exception.Safe.bracket'ing changes between 'Sq.savepoint' and
--- 'Sq.rollbackTo' in a 'Commit'ting transaction. However, using 'Rollback' is
--- much faster.
+-- 'Sq.rollbackTo' in a 'commit'ting transaction. However, using this 'rollback'
+-- is much faster.
 --
 --  @'rollback' p == p.rollback@
 rollback :: Pool Write -> A.Acquire (Transaction Write)
-rollback (Pool_Write _ c _) = writeTransaction' Rollback c
+rollback (Pool_Write _ c _) = writeTransaction' False c
 
 poolConnectionRead :: Pool mode -> A.Acquire (Connection Read)
 poolConnectionRead p = do

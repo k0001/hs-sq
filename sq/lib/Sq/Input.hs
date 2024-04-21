@@ -36,12 +36,17 @@ import Sq.Names
 newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncoder S.SQLData))
    deriving newtype
       ( Semigroup
-        -- ^ Left-biased.
+        -- ^ Left-biased in case of overlapping 'BindingName's.
       , Monoid
+        -- ^ Left-biased in case of overlapping 'BindingName's.
       , NFData
       )
    deriving
-      (Contravariant, Divisible, Decidable)
+      ( Contravariant
+      , Divisible
+        -- ^ Left-biased in case of overlapping 'BindingName's.
+      , Decidable
+      )
       via Op (Map.Map BindingName (Either ErrEncoder S.SQLData))
 
 runInput :: Input i -> i -> Map.Map BindingName (Either ErrEncoder S.SQLData)

@@ -52,6 +52,7 @@ module Sq
     -- * Names
    , Name
    , name
+   , BindingName
 
     -- * Transaction
    , Transaction
@@ -78,9 +79,9 @@ module Sq
 
     -- * Pool
    , Pool
-   , writePool
-   , readPool
-   , tempPool
+   , poolRead
+   , poolWrite
+   , poolTemp
 
     -- * Resource management
     -- $resourceManagement
@@ -162,31 +163,31 @@ uith = A.with
 --
 -- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
 -- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
-tempPool :: Di.Df1 -> A.Acquire (Pool Write)
-tempPool di0 = do
+poolTemp :: Di.Df1 -> A.Acquire (Pool Write)
+poolTemp di0 = do
    d <- acquireTmpDir
    let di1 = Di.attr "mode" Write $ Di.push "pool" di0
-   pool di1 $ defaultSettings (d </> "db.sqlite")
+   pool SWrite di1 $ defaultSettings (d </> "db.sqlite")
 
 -- | Acquire a read-'Write' 'Pool' according to the given 'Settings'.
 --
 -- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
 -- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
-writePool :: Di.Df1 -> Settings -> A.Acquire (Pool Write)
-writePool di0 s = do
+poolWrite :: Di.Df1 -> Settings -> A.Acquire (Pool Write)
+poolWrite di0 s = do
    let di1 = Di.attr "mode" Write $ Di.push "pool" di0
-   pool di1 s
-{-# INLINE writePool #-}
+   pool SWrite di1 s
+{-# INLINE poolWrite #-}
 
 -- | Acquire a 'Read'-only 'Pool' according to the given 'Settings'.
 --
 -- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
 -- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
-readPool :: Di.Df1 -> Settings -> A.Acquire (Pool Read)
-readPool di0 s = do
+poolRead :: Di.Df1 -> Settings -> A.Acquire (Pool Read)
+poolRead di0 s = do
    let di1 = Di.attr "mode" Read $ Di.push "pool" di0
-   pool di1 s
-{-# INLINE readPool #-}
+   pool SRead di1 s
+{-# INLINE poolRead #-}
 
 --------------------------------------------------------------------------------
 

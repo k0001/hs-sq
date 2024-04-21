@@ -74,8 +74,6 @@ library
     resourcet,
     resourcet-extra,
     safe-exceptions,
-    singletons,
-    singletons-th,
     stm,
     streaming,
     template-haskell,

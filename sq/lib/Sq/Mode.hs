@@ -1,56 +1,53 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 module Sq.Mode
    ( -- * Mode
     Mode (..)
-   , ReadSym0
-   , WriteSym0
    , SMode (..)
-
-    -- * Release
-   , Release (..)
+   , fromSMode
 
     -- * Constraints
    , SubMode
    ) where
 
-import Data.Singletons.TH
 import Di.Df1 qualified as Di
 import GHC.TypeLits qualified as GHC
 import Prelude hiding (Read)
 
 --------------------------------------------------------------------------------
 
-singletons [d|data Mode = Read | Write|]
+data Mode
+   = -- | * A @'Sq.Statement' \''Read'@ performs a read-only query.
+     -- Obtain with 'Sq.readStatement'.
+     --
+     -- * A @'Sq.Transaction' \''Read'@ can permorm \''Read'
+     -- 'Sq.Statement's only. Obtain with 'Sq.read'.
+     --
+     -- * A @'Sq.Pool' \''Read'@ can permorm \''Read' 'Sq.Transaction's only.
+     -- Obtain with 'Sq.readPool'.
+     Read
+   | -- | * A @'Sq.Statement' \''Write'@ performs a read or write query.
+     -- Obtain with 'Sq.writeStatement'.
+     --
+     -- * A @'Sq.Transaction' \''Write'@ can permorm both \''Read' and
+     -- \''Write' 'Sq.Statement's. Obtain with 'Sq.commit' or 'Sq.rollback'.
+     --
+     -- * A @'Sq.Pool' \''Write'@ can permorm both \''Read' and \''Write'
+     -- 'Sq.Transaction's. Obtain with 'Sq.writePool' or 'Sq.tempPool'.
+     Write
+   deriving stock (Eq, Ord, Show)
 
-deriving stock instance Eq Mode
-deriving stock instance Ord Mode
-deriving stock instance Show Mode
+data SMode (mode :: Mode) where
+   SRead :: SMode 'Read
+   SWrite :: SMode 'Write
+
+fromSMode :: SMode mode -> Mode
+fromSMode = \case
+   SRead -> Read
+   SWrite -> Write
 
 instance Di.ToValue Mode where
    value = \case
       Read -> "read"
       Write -> "write"
-
---------------------------------------------------------------------------------
-
--- | How to release a 'Transaction'.
-data Release
-   = -- | Changes are commited to the database unless there is an unhandled
-     -- exception during the transaction, in which case they are rolled-back.
-     Commit
-   | -- | Changes are always rolled back at the end of the transaction. This is
-     -- mostly useful for testing purposes. Notice that an equivalent behavior
-     -- can be achieved by 'Control.Exception.Safe.bracket'ing changes between
-     -- 'Sq.savepoint' and 'Sq.rollbackTo' in a 'Commit'ting transaction.
-     -- However, using 'Rollback' is much faster.
-     Rollback
-   deriving stock (Eq, Ord, Show)
-
-instance Di.ToValue Release where
-   value = \case
-      Commit -> "commit"
-      Rollback -> "rollback"
 
 --------------------------------------------------------------------------------
 

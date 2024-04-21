@@ -41,7 +41,7 @@ name :: T.Text -> Either String Name
 name = AT.parseOnly (pName <* AT.endOfInput)
 
 pName :: AT.Parser Name
-pName = do
+pName = flip (AT.<?>) "pName" do
    c1 <- AT.satisfy pw
    cs <- ptail
    pure $ Name $ T.pack (c1 : cs)
@@ -68,7 +68,7 @@ instance Semigroup BindingName where
 
 --------------------------------------------------------------------------------
 
--- | @$foo__bar3__the_thing@
+-- | @foo__bar3__the_thing@
 renderInputBindingName :: BindingName -> T.Text
 renderInputBindingName = T.cons '$' . renderOutputBindingName
 
@@ -76,7 +76,11 @@ parseInputBindingName :: T.Text -> Either String BindingName
 parseInputBindingName = AT.parseOnly (pInputBindingName <* AT.endOfInput)
 
 pInputBindingName :: AT.Parser BindingName
-pInputBindingName = AT.char '$' *> pOutputBindingName
+pInputBindingName = flip (AT.<?>) "pInputBindingName" do
+   void $ AT.char '$'
+   AT.sepBy' pName "__" >>= \case
+      n : ns -> pure $ BindingName n ns
+      [] -> empty
 
 -- | @foo__bar3__the_thing@
 renderOutputBindingName :: BindingName -> T.Text
@@ -88,7 +92,7 @@ parseOutputBindingName :: T.Text -> Either String BindingName
 parseOutputBindingName = AT.parseOnly (pOutputBindingName <* AT.endOfInput)
 
 pOutputBindingName :: AT.Parser BindingName
-pOutputBindingName =
+pOutputBindingName = flip (AT.<?>) "pOutputBindingName" do
    AT.sepBy' pName "__" >>= \case
       n : ns -> pure $ BindingName n ns
       [] -> empty

@@ -49,7 +49,6 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe
 import Data.Monoid
-import Data.Singletons
 import Data.Text qualified as T
 import Data.Tuple
 import Data.Word
@@ -148,14 +147,9 @@ instance NFData (Connection mode) where
 instance Show (Connection mode) where
    showsPrec _ c = showString "Connection{id = " . shows c.id . showChar '}'
 
-connection
-   :: forall mode
-    . (SingI mode)
-   => Di.Df1
-   -> Settings
-   -> A.Acquire (Connection mode)
-connection di0 s = do
-   (di1, xc) <- exclusiveConnection di0 s
+connection :: SMode mode -> Di.Df1 -> Settings -> A.Acquire (Connection mode)
+connection smode di0 s = do
+   (di1, xc) <- exclusiveConnection smode di0 s
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
    pure Connection{xconn, _id = xc.id, di = di1, timeout = s.timeout}
@@ -214,12 +208,11 @@ warningOnException di act = Ex.withException act \e ->
    Di.warning di (e :: Ex.SomeException)
 
 exclusiveConnection
-   :: forall mode
-    . (SingI mode)
-   => Di.Df1
+   :: SMode mode
+   -> Di.Df1
    -> Settings
    -> A.Acquire (Di.Df1, ExclusiveConnection mode)
-exclusiveConnection di0 cs = do
+exclusiveConnection smode di0 cs = do
    cId :: ConnectionId <- newConnectionId
    let di1 = Di.attr "id" cId $ Di.push "connection" di0
    dms :: MVar DatabaseMessage <-
@@ -252,7 +245,7 @@ exclusiveConnection di0 cs = do
             ( do
                let di2 = Di.push "connect" di1
                db <- warningOnException di2 do
-                  S.open2 (T.pack cs.file) (modeFlags (demote @mode)) cs.vfs
+                  S.open2 (T.pack cs.file) (modeFlags (fromSMode smode)) cs.vfs
                Di.debug_ di2 "OK"
                pure db
             )
@@ -351,15 +344,15 @@ data Transaction (mode :: Mode) = forall cmode.
    { _id :: TransactionId
    , di :: Di.Df1
    , conn :: Connection cmode
-   , release :: Release
+   , commit :: Bool
    }
 
 instance Show (Transaction mode) where
    showsPrec _ t =
       showString "Transaction{id = "
          . shows t.id
-         . showString ", release = "
-         . shows t.release
+         . showString ", commit = "
+         . shows t.commit
          . showChar '}'
 
 instance NFData (Transaction mode) where
@@ -389,15 +382,19 @@ readTransaction' c = do
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   pure $ Transaction{_id = tId, di = di1, conn = c{xconn}, release = Rollback}
+   pure $ Transaction{_id = tId, di = di1, conn = c{xconn}, commit = False}
 
 writeTransaction'
-   :: Release -> Connection Write -> A.Acquire (Transaction Write)
-writeTransaction' txrel c = do
+   :: Bool
+   -- ^ Whether to finally @COMMIT@ the transaction.
+   -- Otherwise, it will @ROLLBACK@.
+   -> Connection Write
+   -> A.Acquire (Transaction Write)
+writeTransaction' commit c = do
    xc <- lockConnection c
    tId <- newTransactionId
    let di1 =
-         Di.attr "release" txrel $
+         Di.attr "commit" commit $
             Di.attr "mode" Write $
                Di.attr "id" tId $
                   Di.push "transaction" c.di
@@ -413,17 +410,17 @@ writeTransaction' txrel c = do
          Di.debug_ di2 "OK"
       )
       ( \_ rt -> case releaseTypeException rt of
-         Nothing -> case txrel of
-            Commit -> do
+         Nothing
+            | commit -> do
                let di2 = Di.push "commit" di1
                warningOnException di2 $ run xc (flip S.exec "COMMIT")
                Di.debug_ di2 "OK"
-            Rollback -> rollback Nothing
+            | otherwise -> rollback Nothing
          Just e -> rollback (Just e)
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   pure $ Transaction{_id = tId, di = di1, conn = c{xconn}, release = txrel}
+   pure $ Transaction{_id = tId, di = di1, conn = c{xconn}, commit}
 
 --------------------------------------------------------------------------------
 
@@ -511,8 +508,9 @@ getStatementColumnIndexes st = do
                   n
                   m
             Left _ ->
-               -- If `t` is not a valid name, we can just ignore it.
-               -- It just won't be available for lookup by the RowEncoder.
+               -- If `t` is not binding name as understood by
+               -- `parseOutputBindingName`, we ignore it.
+               -- It just won't be available for lookup later on.
                pure m
       )
       Map.empty
@@ -701,6 +699,7 @@ rowsStream atx !st i = do
 
 --------------------------------------------------------------------------------
 
+-- | See 'savepoint'.
 data Savepoint = Savepoint
    { id :: SavepointId
    , rollback :: IO ()
@@ -712,6 +711,7 @@ instance NFData Savepoint where
 instance Show Savepoint where
    showsPrec _ x = showString "Savepoint{id = " . shows x.id . showChar '}'
 
+-- | Obtain savepoint to which one can later 'rollbackTo'.
 savepoint :: (MonadIO m) => Transaction Write -> m Savepoint
 savepoint Transaction{conn} = liftIO do
    spId <- newSavepointId
@@ -725,6 +725,14 @@ savepoint Transaction{conn} = liftIO do
                run xc $ flip S.exec ("ROLLBACK TO s" <> show' spId)
          }
 
+-- | Disregard all the changes that happened to the 'Transaction'
+-- related to this 'Savepoint' since the time it was obtained
+-- through 'savepoint'.
+--
+-- Trying to 'rollbackTo' a 'Savepoint' that isn't reachable anymore
+-- throws an exception.  A 'Savepoint' stops being reachable when the
+-- relevant 'Transaction' ends, or when of a 'rollbackTo' an earlier
+-- 'Savepoint' on the same 'Transaction' is performed.
 rollbackTo :: (MonadIO m) => Savepoint -> m ()
 rollbackTo s = liftIO s.rollback
 
