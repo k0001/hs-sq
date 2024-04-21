@@ -38,14 +38,12 @@ module Sq
     -- * Statement input
    , Input
    , encode
-   , encodeWith
-   , pushInput
-   , absurd
+   , input
 
     -- * Statement output
    , Output
    , decode
-   , decodeWith
+   , output
 
     -- * Raw statements
    , SQL
@@ -159,20 +157,31 @@ uith = A.with
 
 --------------------------------------------------------------------------------
 
--- | Acquire a 'Pool' temporarily persisted in the file-system.
+-- | Acquire a read-'Write' 'Pool' temporarily persisted in the file-system.
 -- It will be deleted once released. This can be useful for testing.
+--
+-- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
+-- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
 tempPool :: Di.Df1 -> A.Acquire (Pool Write)
 tempPool di0 = do
    d <- acquireTmpDir
    let di1 = Di.attr "mode" Write $ Di.push "pool" di0
    pool di1 $ defaultSettings (d </> "db.sqlite")
 
+-- | Acquire a read-'Write' 'Pool' according to the given 'Settings'.
+--
+-- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
+-- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
 writePool :: Di.Df1 -> Settings -> A.Acquire (Pool Write)
 writePool di0 s = do
    let di1 = Di.attr "mode" Write $ Di.push "pool" di0
    pool di1 s
 {-# INLINE writePool #-}
 
+-- | Acquire a 'Read'-only 'Pool' according to the given 'Settings'.
+--
+-- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
+-- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
 readPool :: Di.Df1 -> Settings -> A.Acquire (Pool Read)
 readPool di0 s = do
    let di1 = Di.attr "mode" Read $ Di.push "pool" di0

@@ -44,8 +44,10 @@ newPoolId = PoolId <$> newUnique
 -- @mode@ indicates whether 'Read'-only or read-'Write' 'Statement's are
 -- supported.
 --
--- It's safe to try to use this 'Pool' concurrently. Concurrency is
--- handled internally.
+-- Obtain with 'Sq.readPool', 'Sq.writePool' or 'Sq.tempPool'.
+--
+-- It's safe and efficient to use a 'Pool' concurrently as is.
+-- Concurrency is handled internally.
 data Pool (mode :: Mode) where
    Pool_Read
       :: PoolId
@@ -128,7 +130,7 @@ pool di0 cs = do
 read :: Pool mode -> A.Acquire (Transaction Read)
 read p = poolConnectionRead p >>= readTransaction'
 
--- | Acquire a  read-write transaction where changes are finally commited to
+-- | Acquire a read-write transaction where changes are finally commited to
 -- the database unless there is an unhandled exception during the transaction,
 -- in which case they are rolled back.
 --

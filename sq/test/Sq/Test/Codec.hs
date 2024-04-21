@@ -81,7 +81,11 @@ tree iop =
 idStatement
    :: (Sq.DefaultEncoder x, Sq.DefaultDecoder x)
    => Sq.Statement Sq.Read x x
-idStatement = Sq.readStatement (Sq.encode "i") (Sq.decode "o") "SELECT $i AS o"
+idStatement =
+   Sq.readStatement
+      (Sq.input "a" (Sq.input "b" "c"))
+      (Sq.output "x" (Sq.output "y" "z"))
+      "SELECT $a__b__c AS x__y__z"
 
 maxNatural :: Natural
 maxNatural = 2 ^ (256 :: Int) - 1

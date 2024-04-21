@@ -3,10 +3,8 @@
 module Sq.Input
    ( Input
    , runInput
-   , Sq.Input.absurd
    , encode
-   , encodeWith
-   , pushInput
+   , input
    , BoundInput
    , bindInput
    , ErrInput (..)
@@ -22,7 +20,6 @@ import Data.Functor.Contravariant.Divisible
 import Data.Map.Strict qualified as Map
 import Data.String
 import Data.Text qualified as T
-import Data.Void
 import Database.SQLite3 qualified as S
 
 import Sq.Encoders
@@ -30,6 +27,12 @@ import Sq.Names
 
 --------------------------------------------------------------------------------
 
+-- | Encodes all the input to a single 'Statement'.
+--
+-- * Construct with 'encode' or 'IsString'.
+--
+-- * Compose with 'input', 'Contravariant', 'Divisible', 'Decidable',
+-- 'Semigroup' or 'Monoid'
 newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncoder S.SQLData))
    deriving newtype
       ( Semigroup
@@ -41,28 +44,94 @@ newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncoder S.SQLData))
       (Contravariant, Divisible, Decidable)
       via Op (Map.Map BindingName (Either ErrEncoder S.SQLData))
 
-absurd :: Input Void
-absurd = Input Data.Void.absurd
-
 runInput :: Input i -> i -> Map.Map BindingName (Either ErrEncoder S.SQLData)
 runInput = coerce
 {-# INLINE runInput #-}
 
-encode :: (DefaultEncoder i) => Name -> Input i
-encode n = encodeWith n defaultEncoder
+-- | Encode a single input parameter. The 'Name' will be reachable from the 'SQL'
+-- query with a @$@ prefix.
+--
+-- @
+-- 'Sq.writeStatement'
+--         ('encode' \"x\" 'defaultEncoder')
+--         'mempty'
+--         \"INSERT INTO t (a) VALUES ($x)\"
+--    :: ('DefaultEncoder' a)
+--    => 'Sq.Statement' 'Sq.Write' a ()
+-- @
+--
+-- Multiple 'Input's can be combined:
+--
+-- @
+-- 'Sq.writeStatement'
+--         ('divided' ('encode' \"x\" 'defaultEncoder')
+--                  ('encode' \"y\" 'defaultEncoder'))
+--         'mempty'
+--         \"INSERT INTO t (a, b) VALUES ($x, $y)\"
+--    :: ('DefaultEncoder' x, 'DefaultEncoder' y)
+--    => 'Sq.Statement' 'Sq.Write' (x, y) ()
+-- @
+--
+-- Pro-tip: Consider using the 'IsString' instance.
+encode :: Name -> Encoder i -> Input i
+encode n e = Input (Map.singleton (bindingName n) . runEncoder e)
 {-# INLINE encode #-}
 
-encodeWith :: Name -> Encoder i -> Input i
-encodeWith n e = Input (Map.singleton (bindingName n) . runEncoder e)
-{-# INLINE encodeWith #-}
-
-pushInput :: Name -> Input i -> Input i
-pushInput n ba = Input \s ->
+-- | Add a prefix to all the parameters in the 'Input', separated by @\__@
+-- from the rest of the 'Name'.
+--
+-- This is useful for making reusable 'Input's. For example,
+-- consider the following.
+--
+-- @
+-- data Point = Point { x :: 'Int', y :: 'Int' }
+--
+-- pointInput :: 'Input' Point
+-- pointInput = 'contramap' (\\case Point x _ -> x) \"x\" <>
+--              'contramap' (\\case Point _ y -> y) \"y\"
+-- @
+--
+-- After 'input':
+--
+-- @
+-- 'Sq.writeStatement'
+--         ('divided' ('input' \"p1\" pointInput)
+--                  ('input' \"p2\" pointInput))
+--         'mempty'
+--         ['sql'|
+--           INSERT INTO vectors (p1x, p1y,
+--                                p2x, p2y)
+--           VALUES ($p1\__x, $p1\__y,
+--                   $p2\__x, $p2\__y) |]
+--    :: 'Sq.Statement' 'Sq.Write' (Point, Point) ()
+-- @
+input :: Name -> Input i -> Input i
+input n ba = Input \s ->
    Map.mapKeysMonotonic (bindingName n <>) (runInput ba s)
-{-# INLINE pushInput #-}
+{-# INLINE input #-}
 
+-- |
+-- @
+-- 'Sq.writeStatement'
+--         \"a\"
+--         'mempty'
+--         \"INSERT INTO t (x) VALUES ($a)\"
+--    :: ('DefaultEncoder' a)
+--    => 'Sq.Statement' 'Sq.Write' a ()
+-- @
+--
+-- Multiple 'Input's can be combined using 'Contravariant' tools:
+--
+-- @
+-- 'Sq.writeStatement'
+--         ('divided' \"a\" \"b\")
+--         'mempty'
+--         \"INSERT INTO t (x, y) VALUES ($a, $b)\"
+--    :: ('DefaultEncoder' a, 'DefaultEncoder' b)
+--    => 'Sq.Statement' 'Sq.Write' (a, b) ()
+-- @
 instance (DefaultEncoder i) => IsString (Input i) where
-   fromString = encode . fromString
+   fromString s = encode (fromString s) defaultEncoder
    {-# INLINE fromString #-}
 
 --------------------------------------------------------------------------------

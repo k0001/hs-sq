@@ -52,12 +52,18 @@ sql =
 
 --------------------------------------------------------------------------------
 
--- | A statements statement taking a value @i@ as input and producing rows of
+-- | A statement taking a value @i@ as input and producing rows of
 -- @o@ values as output.
+--
+-- @mode@ indicates whether 'Read'-only or read-'Write' 'Statement's are
+-- supported.
+--
+-- Construct with 'readStatement' or 'writeStatement'.
 data Statement (mode :: Mode) i o = Statement
    { _input :: Either (Either ErrInput BoundInput) (Input i)
    , _output :: Output o
    , _sql :: SQL
+   -- TODO: _cache :: Bool
    }
 
 instance HasField "sql" (Statement mode i o) SQL where
@@ -112,7 +118,7 @@ runStatementInput st i = either id (flip bindInput i) st._input
 runStatementOutput
    :: (Monad m)
    => Statement mode i o
-   -> (Name -> m (Maybe S.SQLData))
+   -> (BindingName -> m (Maybe S.SQLData))
    -> m (Either ErrOutput o)
 runStatementOutput st f = runOutput f st._output
 {-# INLINE runStatementOutput #-}

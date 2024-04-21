@@ -4,8 +4,8 @@ module Sq.Output
    ( Output
    , ErrOutput (..)
    , decode
-   , decodeWith
    , runOutput
+   , output
    ) where
 
 import Control.Applicative
@@ -23,35 +23,37 @@ import Sq.Names
 data Output o
    = Output_Pure o
    | Output_Fail Ex.SomeException
-   | Output_Decode Name (Decoder (Output o))
+   | Output_Decode BindingName (Decoder (Output o))
 
 data ErrOutput
-   = ErrOutput_ColumnValue Name ErrDecoder
-   | ErrOutput_ColumnMissing Name
+   = ErrOutput_ColumnValue BindingName ErrDecoder
+   | ErrOutput_ColumnMissing BindingName
    | ErrOutput_Fail Ex.SomeException
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
-decode :: (DefaultDecoder o) => Name -> Output o
-decode n = decodeWith n defaultDecoder
+decode :: Name -> Decoder o -> Output o
+decode n vda = Output_Decode (bindingName n) (Output_Pure <$> vda)
 {-# INLINE decode #-}
 
-decodeWith :: Name -> Decoder o -> Output o
-decodeWith n vda = Output_Decode n (Output_Pure <$> vda)
-{-# INLINE decodeWith #-}
+output :: Name -> Output o -> Output o
+output n = \case
+   Output_Decode bn d ->
+      Output_Decode (bindingName n <> bn) (output n <$> d)
+   o -> o
 
 runOutput
    :: (Monad m)
-   => (Name -> m (Maybe S.SQLData))
+   => (BindingName -> m (Maybe S.SQLData))
    -> Output o
    -> m (Either ErrOutput o)
 runOutput f = \case
-   Output_Decode n vda -> do
-      f n >>= \case
+   Output_Decode bn vda -> do
+      f bn >>= \case
          Just s -> case runDecoder vda s of
             Right d -> runOutput f d
-            Left e -> pure $ Left $ ErrOutput_ColumnValue n e
-         Nothing -> pure $ Left $ ErrOutput_ColumnMissing n
+            Left e -> pure $ Left $ ErrOutput_ColumnValue bn e
+         Nothing -> pure $ Left $ ErrOutput_ColumnMissing bn
    Output_Pure a -> pure $ Right a
    Output_Fail e -> pure $ Left $ ErrOutput_Fail e
 
@@ -86,5 +88,5 @@ instance (Monoid o) => Monoid (Output o) where
    {-# INLINE mempty #-}
 
 instance (DefaultDecoder i) => IsString (Output i) where
-   fromString = decode . fromString
+   fromString s = decode (fromString s) defaultDecoder
    {-# INLINE fromString #-}

@@ -331,8 +331,17 @@ setBusyHandler (S.Database pDB) tmaxMS = do
 -- @mode@ indicates whether 'Read'-only or read-'Write' 'Statement's are
 -- supported.
 --
--- It's safe to try to use this 'Transaction' concurrently. Concurrency is
--- handled internally.
+-- Obtain with 'Sq.read', 'Sq.commit' or 'Sq.rollback'.
+--
+-- Prefer to use a 'Read'-only 'Transaction' if you are solely performing
+-- 'Read'-only 'Statement's. It will be more efficient in concurrent settings.
+--
+-- If you have access to a 'Transaction' within its intended scope, then you
+-- can assume that a database transaction has started, and will eventually be
+-- automatically commited or rolled back as requested.
+--
+-- It's safe and efficient to use a 'Transaction' concurrently as is.
+-- Concurrency is handled internally.
 
 -- While the 'Transaction' is active, an exclusive lock is held on the
 -- underlying 'Connection'.
@@ -423,7 +432,7 @@ writeTransaction' txrel c = do
 -- PreparedStatement at the moment.
 data PreparedStatement = PreparedStatement
    { handle :: S.Statement
-   , columns :: Map Name S.ColumnIndex
+   , columns :: Map BindingName S.ColumnIndex
    , id :: StatementId
    , reprepares :: Int
    -- ^ The @SQLITE_STMTSTATUS_REPREPARE@ when @columns@ was generated.
@@ -446,15 +455,19 @@ acquirePreparedStatement di0 raw xconn = do
                if reprepares == ps.reprepares
                   then pure ps
                   else do
-                     Di.debug_ (Di.attr "id" ps.id di1) "Reprepared"
+                     let di2 = Di.attr "id" ps.id di1
+                     Di.debug_ di2 "Reprepared"
                      columns <- getStatementColumnIndexes ps.handle
+                     Di.debug di2 $ "Columns: " <> show (Map.toAscList columns)
                      pure ps{reprepares, columns}
             Nothing -> do
                stId <- newStatementId
-               Di.debug (Di.attr "id" stId di1) $ "Preparing " <> show raw
+               let di2 = Di.attr "id" stId di1
+               Di.debug di2 $ "Preparing " <> show raw
                handle <- run xconn $ flip S.prepare raw.text
                reprepares <- getStatementStatusReprepare handle
                columns <- getStatementColumnIndexes handle
+               Di.debug di2 $ "Columns: " <> show (Map.toAscList columns)
                pure PreparedStatement{id = stId, handle, reprepares, columns}
       )
       \ps -> flip Ex.onException (S.finalize ps.handle) do
@@ -480,7 +493,7 @@ foreign import ccall unsafe "sqlite3_stmt_status"
 c_SQLITE_STMTSTATUS_REPREPARE :: CInt
 c_SQLITE_STMTSTATUS_REPREPARE = 5
 
-getStatementColumnIndexes :: S.Statement -> IO (Map Name S.ColumnIndex)
+getStatementColumnIndexes :: S.Statement -> IO (Map BindingName S.ColumnIndex)
 getStatementColumnIndexes st = do
    -- Despite the type name, ncols is a length.
    S.ColumnIndex (ncols :: Int) <- S.columnCount st
@@ -488,7 +501,7 @@ getStatementColumnIndexes st = do
       ( \ !m i -> do
          -- Pattern never fails because `i` is in range.
          Just t <- S.columnName st i
-         case name t of
+         case parseOutputBindingName t of
             Right n ->
                Map.alterF
                   ( \case
@@ -498,7 +511,7 @@ getStatementColumnIndexes st = do
                   n
                   m
             Left _ ->
-               -- If `t` is not a valid `Name`, we can just ignore it.
+               -- If `t` is not a valid name, we can just ignore it.
                -- It just won't be available for lookup by the RowEncoder.
                pure m
       )
@@ -506,7 +519,7 @@ getStatementColumnIndexes st = do
       (S.ColumnIndex <$> enumFromTo 0 (ncols - 1))
 
 data ErrStatement
-   = ErrStatement_DuplicateColumnName Name
+   = ErrStatement_DuplicateColumnName BindingName
    deriving stock (Eq, Show)
    deriving anyclass (Ex.Exception)
 
@@ -609,7 +622,10 @@ rowsFoldM (F.FoldM !fstep !finit !fext) !atx !st !i = do
          liftIO (S.step ps.handle) >>= \case
             S.Row -> do
                eo <- liftIO $ runStatementOutput st \n ->
-                  traverse (S.column ps.handle) (Map.lookup n ps.columns)
+                  -- traverse (S.column ps.handle) (Map.lookup n ps.columns)
+                  case Map.lookup n ps.columns of
+                     Nothing -> Ex.throwString ("xxxxxxxxxxxxxxx: " <> show (n, ps.columns))
+                     Just x -> Just <$> S.column ps.handle x
                either Ex.throwM (fstep acc >=> k) eo
             S.Done -> fext acc
 
