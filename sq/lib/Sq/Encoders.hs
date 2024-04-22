@@ -46,7 +46,7 @@ newtype Encode a
      --
      -- Ideally, the type @a@ should be small enough that this function always
      -- returns 'Right'. However, that can sometimes be annoying, so we allow
-     -- this function to fail with 'ErrEncoder' if necessary, in which case an
+     -- this function to fail with 'ErrEncode' if necessary, in which case an
      -- 'ErrInput' exception will be eventually thrown while trying to bind the
      -- relevant 'Input' to a 'Statement'. For example, not all 'String's can be
      -- safely encoded as a 'S.SQLText' because some non-unicode characters
