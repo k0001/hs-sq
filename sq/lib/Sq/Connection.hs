@@ -5,25 +5,20 @@
 module Sq.Connection
    ( Connection
    , connection
-   , Transaction
+   , Transaction (smode)
    , Settings (..)
    , settings
    , readTransaction'
    , writeTransaction'
-   , rowsOne
-   , rowsMaybe
-   , rowsZero
-   , rowsList
-   , rowsNonEmpty
-   , rowsFold
-   , rowsFoldM
-   , rowsStream
+   , foldIO
+   , streamIO
    , ConnectionId (..)
    , TransactionId (..)
    , SavepointId (..)
    , Savepoint
    , savepoint
-   , rollbackTo
+   , savepointRollback
+   , savepointRelease
    , ErrRows (..)
    , ErrStatement (..)
    ) where
@@ -46,7 +41,6 @@ import Data.Function (fix)
 import Data.Functor
 import Data.IORef
 import Data.Int
-import Data.List.NonEmpty qualified as NEL
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe
@@ -135,25 +129,25 @@ settings file =
 --
 -- Note: We don't export 'Connection' directly to the public, because it's
 -- easier to export just 'Sq.Pool'.
-data Connection (mode :: Mode) = Connection
+data Connection (c :: Mode) = Connection
    { _id :: ConnectionId
    , timeout :: Word32
    -- ^ Same @timeout@ as in 'Settings'
    , di :: Di.Df1
-   , xconn :: TMVar (Maybe (ExclusiveConnection mode))
+   , xconn :: TMVar (Maybe (ExclusiveConnection c))
    -- ^ 'Nothing' if the connection has vanished.
    }
 
-instance HasField "id" (Connection mode) ConnectionId where
+instance HasField "id" (Connection c) ConnectionId where
    getField = (._id)
 
-instance NFData (Connection mode) where
+instance NFData (Connection c) where
    rnf (Connection !_ !_ !_ !_) = ()
 
-instance Show (Connection mode) where
+instance Show (Connection c) where
    showsPrec _ c = showString "Connection{id = " . shows c.id . showChar '}'
 
-connection :: SMode mode -> Di.Df1 -> Settings -> A.Acquire (Connection mode)
+connection :: SMode mode -> Di.Df1 -> Settings -> A.Acquire (Connection c)
 connection smode di0 s = do
    (di1, xc) <- exclusiveConnection smode di0 s
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
@@ -176,12 +170,12 @@ instance Show (ExclusiveConnection m) where
    showsPrec _ x =
       showString "ExclusiveConnection{id = " . shows x.id . showChar '}'
 
-run :: (MonadIO m) => ExclusiveConnection mode -> (S.Database -> IO x) -> m x
+run :: (MonadIO m) => ExclusiveConnection c -> (S.Database -> IO x) -> m x
 run ExclusiveConnection{run = r} k = liftIO $ r k
 
 --------------------------------------------------------------------------------
 
-lockConnection :: Connection mode -> A.Acquire (ExclusiveConnection mode)
+lockConnection :: Connection c -> A.Acquire (ExclusiveConnection c)
 lockConnection c =
    R.mkAcquire1
       ( warningOnException (Di.push "lock" c.di) do
@@ -217,7 +211,7 @@ exclusiveConnection
    :: SMode mode
    -> Di.Df1
    -> Settings
-   -> A.Acquire (Di.Df1, ExclusiveConnection mode)
+   -> A.Acquire (Di.Df1, ExclusiveConnection c)
 exclusiveConnection smode di0 cs = do
    cId :: ConnectionId <- newConnectionId
    let di1 = Di.attr "id" cId $ Di.push "connection" di0
@@ -327,33 +321,35 @@ setBusyHandler (S.Database pDB) tmaxMS = do
 
 -- | A database transaction handle.
 --
--- @mode@ indicates whether 'Read'-only or read-'Write' 'Statement's are
+-- * @t@ indicates whether 'Read'-only or read-'Write' 'Statement's are
 -- supported.
 --
--- Obtain with 'Sq.read', 'Sq.commit' or 'Sq.rollback'.
---
--- Prefer to use a 'Read'-only 'Transaction' if you are solely performing
+-- * Prefer to use a 'Read'-only 'Transaction' if you are solely performing
 -- 'Read'-only 'Statement's. It will be more efficient in concurrent settings.
 --
--- If you have access to a 'Transaction' within its intended scope, then you
--- can assume that a database transaction has started, and will eventually be
--- automatically commited or rolled back as requested.
+-- * Obtain with 'Sq.read' or 'Sq.commit'. Or, if you are testing, with
+-- 'Sq.rollback'.
 --
--- It's safe and efficient to use a 'Transaction' concurrently as is.
+-- * If you have access to a 'Transaction' within its intended scope, then you
+-- can assume that a database transaction has started, and will eventually be
+-- automatically commited or rolled back as requested when it was obtained.
+--
+-- * It's safe and efficient to use a 'Transaction' concurrently as is.
 -- Concurrency is handled internally.
 
 -- While the 'Transaction' is active, an exclusive lock is held on the
 -- underlying 'Connection'.
-data Transaction (mode :: Mode) = forall cmode.
-    (SubMode cmode mode) =>
+data Transaction (t :: Mode) = forall c.
+    (SubMode c t) =>
    Transaction
    { _id :: TransactionId
    , di :: Di.Df1
-   , conn :: Connection cmode
+   , conn :: Connection c
    , commit :: Bool
+   , smode :: SMode t
    }
 
-instance Show (Transaction mode) where
+instance Show (Transaction t) where
    showsPrec _ t =
       showString "Transaction{id = "
          . shows t.id
@@ -361,14 +357,14 @@ instance Show (Transaction mode) where
          . shows t.commit
          . showChar '}'
 
-instance NFData (Transaction mode) where
-   rnf (Transaction !_ !_ !_ !_) = ()
+instance NFData (Transaction t) where
+   rnf (Transaction !_ !_ !_ !_ !_) = ()
 
-instance HasField "id" (Transaction mode) TransactionId where
+instance HasField "id" (Transaction t) TransactionId where
    getField = (._id)
 
 readTransaction'
-   :: (SubMode mode Read) => Connection mode -> A.Acquire (Transaction Read)
+   :: (SubMode c Read) => Connection c -> A.Acquire (Transaction Read)
 readTransaction' c = do
    xc <- lockConnection c
    tId <- newTransactionId
@@ -388,7 +384,14 @@ readTransaction' c = do
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   pure $ Transaction{_id = tId, di = di1, conn = c{xconn}, commit = False}
+   pure $
+      Transaction
+         { _id = tId
+         , di = di1
+         , conn = c{xconn}
+         , commit = False
+         , smode = SRead
+         }
 
 writeTransaction'
    :: Bool
@@ -426,7 +429,14 @@ writeTransaction' commit c = do
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
-   pure $ Transaction{_id = tId, di = di1, conn = c{xconn}, commit}
+   pure $
+      Transaction
+         { _id = tId
+         , di = di1
+         , conn = c{xconn}
+         , commit
+         , smode = SWrite
+         }
 
 --------------------------------------------------------------------------------
 
@@ -444,7 +454,7 @@ data PreparedStatement = PreparedStatement
 acquirePreparedStatement
    :: Di.Df1
    -> SQL
-   -> ExclusiveConnection mode
+   -> ExclusiveConnection c
    -> A.Acquire PreparedStatement
 acquirePreparedStatement di0 raw xconn = do
    let di1 = Di.push "statement" di0
@@ -500,7 +510,7 @@ getStatementColumnIndexes :: S.Statement -> IO (Map BindingName S.ColumnIndex)
 getStatementColumnIndexes st = do
    -- Despite the type name, ncols is a length.
    S.ColumnIndex (ncols :: Int) <- S.columnCount st
-   foldM
+   Control.Monad.foldM
       ( \ !m i -> do
          -- Pattern never fails because `i` is in range.
          Just t <- S.columnName st i
@@ -538,120 +548,23 @@ data ErrRows
    deriving stock (Eq, Show)
    deriving anyclass (Ex.Exception)
 
--- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
-rowsOne
-   :: (MonadIO m, SubMode t s)
-   => A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
-   --
-   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
-   -- already obatained a 'Transaction' by other means.
-   -> Statement s i o
-   -> i
-   -> m o
-rowsOne atx st i = liftIO do
-   rowsMaybe atx st i >>= \case
-      Just o -> pure o
-      Nothing -> Ex.throwM ErrRows_TooFew
-
--- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 0 rowsOne.
-rowsZero
-   :: (MonadIO m, SubMode t s)
-   => A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
-   --
-   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
-   -- already obatained a 'Transaction' by other means.
-   -> Statement s i o
-   -> i
-   -> m ()
-rowsZero atx st i = liftIO $ rowsFoldM f atx st i
-  where
-   f :: forall x. F.FoldM IO x ()
-   f = F.FoldM (\_ _ -> Ex.throwM ErrRows_TooMany) (pure ()) pure
-
--- | Like 'rowsList'. Throws 'ErrRows_TooMany' if more than 1 rowsOne.
-rowsMaybe
-   :: (MonadIO m, SubMode t s)
-   => A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
-   --
-   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
-   -- already obatained a 'Transaction' by other means.
-   -> Statement s i o
-   -> i
-   -> m (Maybe o)
-rowsMaybe atx st i = liftIO $ rowsFoldM f atx st i
-  where
-   f :: forall x. F.FoldM IO x (Maybe x)
-   f =
-      F.FoldM
-         (maybe (pure . Just) \_ _ -> Ex.throwM ErrRows_TooMany)
-         (pure Nothing)
-         pure
-
--- | Like 'rowsList'. Throws 'ErrRows_TooFew' if no rows.
-rowsNonEmpty
-   :: (MonadIO m, SubMode t s)
-   => A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
-   --
-   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
-   -- already obatained a 'Transaction' by other means.
-   -> Statement s i o
-   -> i
-   -> m (Int64, NEL.NonEmpty o)
-rowsNonEmpty atx st i = liftIO do
-   rowsList atx st i >>= \case
-      (n, os) | Just nos <- NEL.nonEmpty os -> pure (n, nos)
-      _ -> Ex.throwM ErrRows_TooFew
-
--- | Get the statement output rows as a list, together with its length.
+-- | Fold the output rows from a 'Statement' in a way that allows
+-- interleaving 'IO' actions.
 --
--- Holds an exclusive lock on the database connection temporarily, while the
--- list is being constructed.
-rowsList
-   :: (MonadIO m, SubMode t s)
-   => A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
-   --
-   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
-   -- already obatained a 'Transaction' by other means.
-   -> Statement s i o
-   -> i
-   -> m (Int64, [o])
-rowsList atx st i = liftIO do
-   rowsFoldM (F.generalize ((,) <$> F.genericLength <*> F.list)) atx st i
+-- This is simpler alternative to 'streamIO' for when all you need to do
+-- is fold.
 
-rowsFold
-   :: (MonadIO m, SubMode t s)
-   => F.Fold o z
-   -> A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
-   --
-   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
-   -- already obatained a 'Transaction' by other means.
-   -> Statement s i o
-   -> i
-   -> m z
-rowsFold f atx st i = liftIO do
-   rowsFoldM (F.generalize f) atx st i
-
--- Note: All of the rowsXxx functions can be implemented in terms of
--- rowsStream, but it is faster to do it through this rowsFoldM
--- because we can avoid per-row resource management.
-rowsFoldM
+-- Note: This could be defined in terms of 'streamIO', but this implementation
+-- is faster because we avoid per-row resource management.
+foldIO
    :: (MonadIO m, Ex.MonadMask m, SubMode t s)
    => F.FoldM m o z
    -> A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
-   --
-   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
-   -- already obatained a 'Transaction' by other means.
+   -- ^ See the documentation for 'streamIO'.
    -> Statement s i o
    -> i
    -> m z
-rowsFoldM (F.FoldM !fstep !finit !fext) !atx !st !i = do
+foldIO (F.FoldM !fstep !finit !fext) !atx !st !i = do
    acc0 <- finit
    R.withAcquire (transactionBoundPreparedStatement atx st i) \ps ->
       flip fix acc0 \k !acc ->
@@ -661,6 +574,74 @@ rowsFoldM (F.FoldM !fstep !finit !fext) !atx !st !i = do
                   traverse (S.column ps.handle) (Map.lookup n ps.columns)
                either Ex.throwM (fstep acc >=> k) eo
             S.Done -> fext acc
+
+-- | Stream the output rows from a 'Statement' in a way that allows
+-- interleaving 'IO' actions.
+--
+-- An exclusive lock will be held on the 'Transaction' while the 'Z.Stream' is
+-- producing rows. This may not be a problem if we are streaming from a
+-- \''Read' 'Transaction' obtained from a 'Sq.Pool', because more
+-- 'Transaction's can be readily be obtained from said 'Sq.Pool' and used
+-- concurrently for other purposes. But if we are streaming from a \''Write'
+-- 'Transaction', then all other concurrent attempts to perform a \''Write'
+-- 'Transaction' will be delayed. With that in mind, consider this:
+--
+-- * The 'Transaction' lock is released automatically if the 'Z.Stream' is
+-- consumed until exhaustion.
+--
+-- * Otherwise, if you won't consume the 'Z.Stream' until exhaustion, then be
+-- sure to exit @m@ by means of 'R.runResourceT' or similar as soon as possible
+-- in order to release the 'Transaction' lock.
+streamIO
+   :: (R.MonadResource m, SubMode t s)
+   => A.Acquire (Transaction t)
+   -- ^ How to obtain the 'Transaction' once the 'Z.Stream' starts
+   -- being consumed.
+   --
+   -- Most likely you will be using one of @pool.read@ or @pool.commit@ here.
+   -- That is, "Sq".'read' or "Sq".'commit'. This corresponds to the idea that
+   -- no 'Statement' other than the one given to this function will be
+   -- executed during the 'Transaction'.
+   --
+   -- If you already obtained a 'Transaction' by other means, then simply use
+   -- 'pure' to wrap a 'Transaction' in 'A.Acquire'. Also, in that case, and if
+   -- you are not interleaving 'IO' actions, you may prefer to use 'streamT'
+   -- within 'Transactional'.
+   -> Statement s i o
+   -> i
+   -> Z.Stream (Z.Of o) m ()
+   -- ^ A 'Z.Stream' from the @streaming@ library.
+   --
+   -- We use the @streaming@ library because it is fast and doesn't
+   -- add any transitive dependencies to this project.
+streamIO !atx !st i = do
+   (k, typs) <- lift $ A.allocateAcquire do
+      tx <- atx
+      ps <- transactionBoundPreparedStatement (pure tx) st i
+      typs <- R.mkAcquire1 (newTMVarIO (Just ps)) \typs -> do
+         atomically $ tryTakeTMVar typs >> putTMVar typs Nothing
+      pure (typs :: TMVar (Maybe PreparedStatement))
+   Z.untilLeft $ liftIO $ Ex.mask \restore ->
+      Ex.bracket
+         ( atomically do
+            takeTMVar typs >>= \case
+               Just ps -> pure ps
+               Nothing ->
+                  -- `m` was run before the `Z.Stream` was fully consumed.
+                  -- This is normal, we just want to throw an useful exception.
+                  Ex.throwM $ resourceVanishedWithCallStack "streamIO"
+         )
+         (atomically . fmap (const ()) . tryPutTMVar typs . Just)
+         \ps ->
+            restore (S.step ps.handle) >>= \case
+               S.Row ->
+                  either Ex.throwM (pure . Right) =<< restore do
+                     runStatementOutput st \n ->
+                        traverse (S.column ps.handle) (Map.lookup n ps.columns)
+               S.Done ->
+                  -- The `Z.Stream` finished before `m` was run, so we release
+                  -- the transaction early.
+                  Left <$> R.releaseType k A.ReleaseEarly
 
 transactionBoundPreparedStatement
    :: (SubMode t s)
@@ -683,103 +664,51 @@ transactionBoundPreparedStatement !atx !st !i = do
    Di.debug di2 $ "Bound " <> show kvs
    pure ps
 
--- | Stream of output rows.
---
--- An exclusive lock will be held on the 'Transaction' while the 'Z.Stream' is
--- producing rows. This may not be a problem if we are streaming from a
--- \''Read' 'Transaction' obtained from a 'Sq.Pool', because more
--- 'Transaction's can be readily be obtained from said 'Sq.Pool' and used
--- concurrently for other purposes. But if we are streaming from a \''Write'
--- 'Transaction', then all other concurrent attempts to perform a \''Write'
--- 'Transaction' will be delayed. With that in mind, consider this:
---
--- * The 'Transaction' lock is released automatically if the 'Z.Stream' is
--- consumed until exhaustion.
---
--- * Otherwise, if you won't consume the 'Z.Stream' until exhaustion, then be
--- sure to exit @m@ by means of 'R.runResourceT' or similar as soon as possible
--- in order to release the 'Transaction' lock.
-rowsStream
-   :: (R.MonadResource m, SubMode t s)
-   => A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once the 'Z.Stream' starts
-   -- being consumed.
-   --
-   -- Use 'pure' to wrap a 'Transaction' in 'A.Acquire' if you
-   -- already obatained a 'Transaction' by other means.
-   -> Statement s i o
-   -> i
-   -> Z.Stream (Z.Of o) m ()
-   -- ^ A 'Z.Stream' from the @streaming@ library.
-   --
-   -- We use the @streaming@ library because it is fast and doesn't
-   -- add any transitive dependencies to this project.
-rowsStream atx !st i = do
-   (k, typs) <- lift $ A.allocateAcquire do
-      ps <- transactionBoundPreparedStatement atx st i
-      typs <- R.mkAcquire1 (newTMVarIO (Just ps)) \typs -> do
-         atomically $ tryTakeTMVar typs >> putTMVar typs Nothing
-      pure (typs :: TMVar (Maybe PreparedStatement))
-   Z.untilLeft $ liftIO $ Ex.mask \restore ->
-      Ex.bracket
-         ( atomically do
-            takeTMVar typs >>= \case
-               Just ps -> pure ps
-               Nothing ->
-                  -- `m` was run before the `Z.Stream` was fully consumed.
-                  -- This is normal, we just want to throw an useful exception.
-                  Ex.throwM $ resourceVanishedWithCallStack "Rows"
-         )
-         (atomically . fmap (const ()) . tryPutTMVar typs . Just)
-         \ps ->
-            restore (S.step ps.handle) >>= \case
-               S.Row ->
-                  either Ex.throwM (pure . Right) =<< restore do
-                     runStatementOutput st \n ->
-                        traverse (S.column ps.handle) (Map.lookup n ps.columns)
-               S.Done ->
-                  -- The `Z.Stream` finished before `m` was run, so we release
-                  -- the transaction early.
-                  Left <$> R.releaseType k A.ReleaseEarly
-
 --------------------------------------------------------------------------------
 
--- | See 'savepoint'.
+-- | See 'savepointRollback'.
 data Savepoint = Savepoint
    { id :: SavepointId
    , rollback :: IO ()
+   , release :: IO ()
    }
 
 instance NFData Savepoint where
-   rnf (Savepoint !_ !_) = ()
+   rnf (Savepoint !_ !_ !_) = ()
 
 instance Show Savepoint where
    showsPrec _ x = showString "Savepoint{id = " . shows x.id . showChar '}'
 
--- | Obtain savepoint to which one can later 'rollbackTo'.
+-- | Obtain savepoint to which one can later 'savepointRollback' or
+-- 'savepointRelease'.
 savepoint :: (MonadIO m) => Transaction Write -> m Savepoint
 savepoint Transaction{conn} = liftIO do
    spId <- newSavepointId
-   R.withAcquire (lockConnection conn) \xc ->
-      run xc $ flip S.exec ("SAVEPOINT s" <> show' spId)
+   let run' raw = R.withAcquire (lockConnection conn) \xc ->
+         run xc $ flip S.exec raw
+   run' $ "SAVEPOINT s" <> show' spId
    pure $
       Savepoint
          { id = spId
-         , rollback =
-            R.withAcquire (lockConnection conn) \xc ->
-               run xc $ flip S.exec ("ROLLBACK TO s" <> show' spId)
+         , rollback = run' $ "ROLLBACK TO s" <> show' spId
+         , release = run' $ "RELEASE s" <> show' spId
          }
 
 -- | Disregard all the changes that happened to the 'Transaction'
 -- related to this 'Savepoint' since the time it was obtained
 -- through 'savepoint'.
 --
--- Trying to 'rollbackTo' a 'Savepoint' that isn't reachable anymore
+-- Trying to 'savepointRollback' a 'Savepoint' that isn't reachable anymore
 -- throws an exception.  A 'Savepoint' stops being reachable when the
--- relevant 'Transaction' ends, or when of a 'rollbackTo' an earlier
--- 'Savepoint' on the same 'Transaction' is performed.
-rollbackTo :: (MonadIO m) => Savepoint -> m ()
-rollbackTo s = liftIO s.rollback
+-- relevant 'Transaction' ends, when of a 'savepointRollback' an earlier
+-- 'Savepoint' on the same 'Transaction' is performed, or when it is
+-- explicitely released through 'savepointRelease'.
+savepointRollback :: (MonadIO m) => Savepoint -> m ()
+savepointRollback s = liftIO s.rollback
+
+-- | See 'savepointRollback'.
+savepointRelease :: (MonadIO m) => Savepoint -> m ()
+savepointRelease s = liftIO s.release
 
 --------------------------------------------------------------------------------
 

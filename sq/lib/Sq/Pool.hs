@@ -40,14 +40,14 @@ newPoolId = PoolId <$> newUnique
 
 -- | Pool of connections to a SQLite database.
 --
--- @mode@ indicates whether 'Read'-only or read-'Write' 'Statement's are
--- supported.
+-- * @p@ indicates whether 'Read'-only or read-'Write' 'Statement's are
+-- supported by this 'Pool'.
 --
--- Obtain with 'Sq.readPool', 'Sq.writePool' or 'Sq.tempPool'.
+-- * Obtain with 'Sq.readPool', 'Sq.writePool' or 'Sq.tempPool'.
 --
--- It's safe and efficient to use a 'Pool' concurrently as is.
+-- * It's safe and efficient to use a 'Pool' concurrently as is.
 -- Concurrency is handled internally.
-data Pool (mode :: Mode) where
+data Pool (p :: Mode) where
    Pool_Read
       :: PoolId
       -> P.Pool (A.Allocated (Connection Read))
@@ -58,47 +58,28 @@ data Pool (mode :: Mode) where
       -> P.Pool (A.Allocated (Connection Read))
       -> Pool Write
 
-instance NFData (Pool mode) where
+instance NFData (Pool p) where
    rnf (Pool_Read !_ !_) = ()
    rnf (Pool_Write !_ a !_) = rnf a
 
-instance HasField "id" (Pool mode) PoolId where
+instance HasField "id" (Pool p) PoolId where
    getField = \case
       Pool_Read x _ -> x
       Pool_Write x _ _ -> x
 
--- | @'read' p == p.read@
-instance
-   HasField
-      "read"
-      (Pool mode)
-      (A.Acquire (Transaction Read))
-   where
+-- | @'read' pool == pool.read@
+instance HasField "read" (Pool p) (A.Acquire (Transaction Read)) where
    getField = read
 
--- | @'commit' p == p.commit@
-instance
-   HasField
-      "commit"
-      (Pool Write)
-      (A.Acquire (Transaction Write))
-   where
+-- | @'commit' pool == pool.commit@
+instance HasField "commit" (Pool Write) (A.Acquire (Transaction Write)) where
    getField = commit
 
--- | @'rollback' p == p.rollback@
-instance
-   HasField
-      "rollback"
-      (Pool Write)
-      (A.Acquire (Transaction Write))
-   where
+-- | @'rollback' pool == pool.rollback@
+instance HasField "rollback" (Pool Write) (A.Acquire (Transaction Write)) where
    getField = rollback
 
-pool
-   :: SMode mode
-   -> Di.Df1
-   -> Settings
-   -> A.Acquire (Pool mode)
+pool :: SMode p -> Di.Df1 -> Settings -> A.Acquire (Pool p)
 pool smode di0 cs = do
    pId <- newPoolId
    let di1 = Di.attr "id" pId di0
@@ -127,27 +108,26 @@ pool smode di0 cs = do
 
 -- | Acquire a read-only transaction.
 --
--- @'read' p == p.read@
+-- @'read' pool == pool.read@
 read :: Pool mode -> A.Acquire (Transaction Read)
 read p = poolConnectionRead p >>= readTransaction'
 
--- | Acquire a read-write transaction where changes are finally commited to
+-- | Acquire a read-commit transaction where changes are finally commited to
 -- the database unless there is an unhandled exception during the transaction,
 -- in which case they are rolled back.
 --
--- @'commit' p == p.commit@
+-- @'commit' pool == pool.commit@
 commit :: Pool Write -> A.Acquire (Transaction Write)
 commit (Pool_Write _ c _) = writeTransaction' True c
 
--- | Acquire a read-write transaction where changes are always rolled back.
+-- | Acquire a read-commit transaction where changes are always rolled back.
 -- This is mostly useful for testing purposes.
 --
 -- Notice that an equivalent behavior can be achieved by
 -- 'Control.Exception.Safe.bracket'ing changes between 'Sq.savepoint' and
--- 'Sq.rollbackTo' in a 'commit'ting transaction. However, using this 'rollback'
+-- 'Sq.rollbackTo' in a 'commit'ting transaction. Or by using 'Ex.throwM'
+-- and 'Ex.catch' within 'Transactional'. However, using this 'rollback'
 -- is much faster.
---
---  @'rollback' p == p.rollback@
 rollback :: Pool Write -> A.Acquire (Transaction Write)
 rollback (Pool_Write _ c _) = writeTransaction' False c
 

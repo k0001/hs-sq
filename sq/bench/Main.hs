@@ -56,16 +56,19 @@ run pool nw = bench (show nw) $ nfIO do
    forM_ [1 .. nw] \i -> do
       waitQSem semForkW
       Async.link =<< Async.async do
-         o1 <- Sq.row pool.commit stInsert i <* add 'I'
+         o1 <- Sq.transactional pool.commit $ Sq.one stInsert i
+         add 'I'
          when (o1 /= i) $ Ex.throwString "stInsert: o /= i"
          void $
             waitAll =<< forM [0 .. 9] \(j :: Int) -> do
                waitQSem semForkR
                Async.async do
-                  o2 <- Sq.row pool.read stRead i <* add (digitChar j)
+                  o2 <- Sq.transactional pool.read $ Sq.one stRead i
+                  add $ digitChar j
                   when (o2 /= i) $ Ex.throwString "stRead: o /= i"
                   signalQSem semForkR
-         o3 <- Sq.row pool.commit stDelete i <* add 'D'
+         o3 <- Sq.transactional pool.commit $ Sq.one stDelete i
+         add 'D'
          when (o3 /= i) $ Ex.throwString "stDelete: o /= i"
          signalQSemN semDone 1
          signalQSem semForkW
@@ -94,8 +97,8 @@ withPoolTmp :: Di.Df1 -> (Sq.Pool Sq.Write -> Benchmark) -> Benchmark
 withPoolTmp di k =
    envWithCleanup
       ( do
-         (pool, rel) <- R.withRestoreIO $ R.unAcquire $ Sq.tempPool di
-         Sq.rowsZero pool.commit stCreate ()
+         (pool, rel) <- R.withRestoreIO $ R.unAcquire $ Sq.poolTemp di
+         Sq.transactional pool.commit $ Sq.zero stCreate ()
          pure (pool, rel)
       )
       (\(_, rel) -> rel A.ReleaseNormal)

@@ -52,7 +52,7 @@ library
     Sq.Pool
     Sq.Statement
     Sq.Support
-    Sq.M
+    Sq.Transactional
   build-depends:
     async,
     attoparsec,
@@ -70,6 +70,7 @@ library
     filepath,
     foldl,
     profunctors,
+    ref-tf,
     resource-pool,
     resourcet,
     resourcet-extra,

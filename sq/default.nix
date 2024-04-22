@@ -1,10 +1,10 @@
 { mkDerivation, async, async-pool, attoparsec, base, binary
 , bytestring, clock, containers, contravariant, criterion, deepseq
 , df1, di, di-core, di-df1, direct-sqlite, directory, exceptions
-, filepath, foldl, hedgehog, lib, profunctors, resource-pool
-, resourcet, resourcet-extra, safe-exceptions, stm, streaming
-, tasty, tasty-hedgehog, tasty-hunit, template-haskell, text, time
-, transformers
+, filepath, foldl, hedgehog, lib, profunctors, ref-tf
+, resource-pool, resourcet, resourcet-extra, safe-exceptions, stm
+, streaming, tasty, tasty-hedgehog, tasty-hunit, template-haskell
+, text, time, transformers
 }:
 mkDerivation {
   pname = "sq";
@@ -13,9 +13,9 @@ mkDerivation {
   libraryHaskellDepends = [
     async attoparsec base binary bytestring clock containers
     contravariant deepseq di-core di-df1 direct-sqlite directory
-    exceptions filepath foldl profunctors resource-pool resourcet
-    resourcet-extra safe-exceptions stm streaming template-haskell text
-    time transformers
+    exceptions filepath foldl profunctors ref-tf resource-pool
+    resourcet resourcet-extra safe-exceptions stm streaming
+    template-haskell text time transformers
   ];
   testHaskellDepends = [
     base bytestring df1 di di-core hedgehog resourcet resourcet-extra

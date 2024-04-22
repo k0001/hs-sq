@@ -58,7 +58,7 @@ tree iop =
   where
    t
       :: forall a
-       . (Typeable a, Eq a, Show a, Sq.DefaultEncoder a, Sq.DefaultDecoder a)
+       . (Typeable a, Eq a, Show a, Sq.EncodeDefault a, Sq.DecodeDefault a)
       => H.Gen a
       -> TestTree
    t ga =
@@ -66,20 +66,23 @@ tree iop =
          (tyConName (typeRepTyCon (typeRep ga)))
          [ testProperty "pure" $ H.property do
             a0 <- H.forAll ga
-            case Sq.runEncoder Sq.defaultEncoder a0 of
+            let Sq.Encode g = Sq.encodeDefault
+            case g a0 of
                Left e0 -> Ex.throwM e0
-               Right raw -> case Sq.runDecoder Sq.defaultDecoder raw of
-                  Left e -> Ex.throwM e
-                  Right a1 -> a0 H.=== a1
+               Right raw -> do
+                  let Sq.Decode f = Sq.decodeDefault
+                  case f raw of
+                     Left e -> Ex.throwM e
+                     Right a1 -> a0 H.=== a1
          , testProperty "db" $ H.property do
             p <- liftIO iop
             a0 <- H.forAll ga
-            a1 <- Sq.row p.read idStatement a0
+            a1 <- Sq.transactional p.read $ Sq.one idStatement a0
             a0 H.=== a1
          ]
 
 idStatement
-   :: (Sq.DefaultEncoder x, Sq.DefaultDecoder x)
+   :: (Sq.EncodeDefault x, Sq.DecodeDefault x)
    => Sq.Statement Sq.Read x x
 idStatement =
    Sq.readStatement

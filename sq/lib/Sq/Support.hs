@@ -6,16 +6,25 @@ module Sq.Support
    , acquireTmpDir
    , releaseTypeException
    , manyTill1
+   , foldPostmapM
+   , foldList
+   , foldNonEmptyM
+   , foldMaybeM
+   , foldZeroM
+   , foldOneM
    ) where
 
 import Control.Applicative
 import Control.Exception.Safe qualified as Ex
+import Control.Foldl qualified as F
 import Control.Monad hiding (void)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
 import Data.Function
 import Data.IORef
+import Data.Int
+import Data.List.NonEmpty qualified as NEL
 import Data.String
 import Data.Word
 import GHC.IO.Exception
@@ -82,3 +91,48 @@ manyTill1 fz fa = go id
       optional fz >>= \case
          Just z | !as <- acc [] -> pure (as, z)
          Nothing -> fa >>= \ !a -> go (acc . (a :))
+
+--------------------------------------------------------------------------------
+
+foldPostmapM :: (Monad m) => (a -> m r) -> F.FoldM m x a -> F.FoldM m x r
+foldPostmapM f (F.FoldM step begin done) = F.FoldM step begin (done >=> f)
+
+foldList :: F.Fold o (Int64, [o])
+foldList = (,) <$> F.genericLength <*> F.list
+
+foldNonEmptyM
+   :: (Ex.MonadThrow m, Ex.Exception e)
+   => e
+   -- ^ Zero.
+   -> F.FoldM m o (Int64, NEL.NonEmpty o)
+foldNonEmptyM e = flip foldPostmapM (F.generalize foldList) \case
+   (n, os) | Just nos <- NEL.nonEmpty os -> pure (n, nos)
+   _ -> Ex.throwM e
+
+foldMaybeM
+   :: (Ex.MonadThrow m, Ex.Exception e)
+   => e
+   -- ^ More than one.
+   -> F.FoldM m o (Maybe o)
+foldMaybeM e =
+   F.FoldM
+      (maybe (pure . Just) \_ _ -> Ex.throwM e)
+      (pure Nothing)
+      pure
+
+foldZeroM
+   :: (Ex.MonadThrow m, Ex.Exception e)
+   => e
+   -- ^ More than zero.
+   -> F.FoldM m o ()
+foldZeroM e = F.FoldM (\_ _ -> Ex.throwM e) (pure ()) pure
+
+foldOneM
+   :: (Ex.MonadThrow m, Ex.Exception e)
+   => e
+   -- ^ Zero.
+   -> e
+   -- ^ More than one.
+   -> F.FoldM m o o
+foldOneM e0 eN = foldPostmapM (maybe (Ex.throwM e0) pure) (foldMaybeM eN)
+

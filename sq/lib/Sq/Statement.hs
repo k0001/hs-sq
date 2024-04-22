@@ -33,6 +33,7 @@ import Sq.Output
 
 --------------------------------------------------------------------------------
 
+-- | Raw SQL String. Completely unsafe.
 newtype SQL = SQL T.Text
    deriving newtype (Eq, Ord, Show, IsString, Semigroup, NFData)
 
@@ -52,24 +53,24 @@ sql =
 
 --------------------------------------------------------------------------------
 
--- | A statement taking a value @i@ as input and producing rows of
+-- | * A statement taking a value @i@ as input and producing rows of
 -- @o@ values as output.
 --
--- @mode@ indicates whether 'Read'-only or read-'Write' 'Statement's are
+-- * @s@ indicates whether 'Read'-only or read-'Write' 'Statement's are
 -- supported.
 --
--- Construct with 'readStatement' or 'writeStatement'.
-data Statement (mode :: Mode) i o = Statement
+-- * Construct with 'Sq.readStatement' or 'Sq.writeStatement'.
+data Statement (s :: Mode) i o = Statement
    { _input :: Either (Either ErrInput BoundInput) (Input i)
    , _output :: Output o
    , _sql :: SQL
    -- TODO: _cache :: Bool
    }
 
-instance HasField "sql" (Statement mode i o) SQL where
+instance HasField "sql" (Statement s i o) SQL where
    getField = (._sql)
 
-instance Show (Statement mode i o) where
+instance Show (Statement s i o) where
    showsPrec n s =
       showParen (n >= appPrec1) $
          showString "Statement{sql = "
@@ -79,45 +80,43 @@ instance Show (Statement mode i o) where
             . showString ", output = ..}"
 
 statement
-   :: forall mode i o
+   :: forall s i o
     . Input i
    -> Output o
    -> SQL
-   -> Statement mode i o
+   -> Statement s i o
 statement ii _output _sql = Statement{_input = Right ii, ..}
 {-# INLINE statement #-}
 
-instance Functor (Statement mode i) where
+instance Functor (Statement s i) where
    fmap = rmap
    {-# INLINE fmap #-}
 
-instance Profunctor (Statement mode) where
+instance Profunctor (Statement s) where
    dimap f g st =
       st{_input = fmap (contramap f) st._input, _output = fmap g st._output}
    {-# INLINE dimap #-}
 
--- | This function is run automatically by 'rowStream' and similar @rowXxx@
--- functions before acquiring the 'Transaction'. You never need to call this
--- function yourself. However, if the 'Transaction' is acquired manually to be
--- reused in multiple queries, then you can use 'bindStatement' before
--- acquiring said 'Transaction' in order to make sure that the 'Input' encoding
--- work happens before the 'Transaction' is locked. This only makes sense if
--- the 'Input' encoding work is expected to be expensive.
+-- | You can use this  function if you have the 'Statement' input readily
+-- available sooner than necessary, or if you expect that binding the input
+-- will be a costly operation so you would like to make sure that such work
+-- happens outside of a 'Transaction'.
 --
--- Note: Make sure to evaluate the resulting 'Statement' to WHNF.
-bindStatement :: Statement mode i o -> i -> Statement mode () o
+-- In you are intersted in those later strictness benefits, then make sure to
+-- evaluate the resulting 'Statement' to WHNF.
+bindStatement :: Statement s i o -> i -> Statement s () o
 bindStatement st i = case runStatementInput st i of
    Right !bi -> st{_input = Left (Right bi)}
    Left ei -> st{_input = Left (Left ei)}
 {-# INLINE bindStatement #-}
 
-runStatementInput :: Statement mode i o -> i -> Either ErrInput BoundInput
+runStatementInput :: Statement s i o -> i -> Either ErrInput BoundInput
 runStatementInput st i = either id (flip bindInput i) st._input
 {-# INLINE runStatementInput #-}
 
 runStatementOutput
    :: (Monad m)
-   => Statement mode i o
+   => Statement s i o
    -> (BindingName -> m (Maybe S.SQLData))
    -> m (Either ErrOutput o)
 runStatementOutput st f = runOutput f st._output

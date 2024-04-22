@@ -1,2 +1,0 @@
-module Sq.M where
-
