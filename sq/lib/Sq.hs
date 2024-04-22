@@ -251,7 +251,8 @@ poolRead di0 s = do
 
 -- | Construct a 'Read'-only 'Statement'.
 --
--- __WARNING__:
+-- __WARNING__: This library doesn't __yet__ provide a safe way to construct
+-- 'Statement's. Be responsible.
 --
 -- * The 'SQL' must be read-only.
 --
@@ -266,7 +267,8 @@ readStatement = statement
 -- | Construct a 'Statement' that can only be executed as part of a 'Write'
 -- 'Transaction'.
 --
--- __WARNING__:
+-- __WARNING__: This library doesn't __yet__ provide a safe way to construct
+-- 'Statement's. Be responsible.
 --
 -- * The 'SQL' must contain a single statement.
 --

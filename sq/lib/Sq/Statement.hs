@@ -100,7 +100,7 @@ instance Profunctor (Statement s) where
 -- | You can use this  function if you have the 'Statement' input readily
 -- available sooner than necessary, or if you expect that binding the input
 -- will be a costly operation so you would like to make sure that such work
--- happens outside of a 'Transaction'.
+-- always happens outside of a 'Sq.Transaction'.
 --
 -- In you are intersted in those later strictness benefits, then make sure to
 -- evaluate the resulting 'Statement' to WHNF.
