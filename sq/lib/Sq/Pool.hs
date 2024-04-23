@@ -4,9 +4,10 @@
 module Sq.Pool
    ( Pool
    , pool
-   , read
-   , commit
-   , rollback
+   , subPool
+   , readTransaction
+   , commitTransaction
+   , rollbackTransaction
    )
 where
 
@@ -58,6 +59,19 @@ data Pool (p :: Mode) where
       -> P.Pool (A.Allocated (Connection Read))
       -> Pool Write
 
+-- | Use 'subPool' to obtain the 'Read'-only subset from a read-'Write' 'Pool'.
+--
+-- This can be useful if you are passing the 'Pool' as an argument to some code,
+-- and you want to ensure that it can't performs 'Write' operations on it.
+--
+-- The “new” 'Pool' is not new. It shares all the underlying resources with the
+-- original one, including their lifetime.
+subPool :: Pool 'Write -> Pool 'Read
+subPool (Pool_Write i _w r) =
+   -- It's alright to "forget" about '_w' here. The original 'Write' pool
+   -- is the one that deals with resource management, anyway.
+   Pool_Read i r
+
 instance NFData (Pool p) where
    rnf (Pool_Read !_ !_) = ()
    rnf (Pool_Write !_ a !_) = rnf a
@@ -67,17 +81,6 @@ instance HasField "id" (Pool p) PoolId where
       Pool_Read x _ -> x
       Pool_Write x _ _ -> x
 
--- | @'read' pool == pool.read@
-instance HasField "read" (Pool p) (A.Acquire (Transaction Read)) where
-   getField = read
-
--- | @'commit' pool == pool.commit@
-instance HasField "commit" (Pool Write) (A.Acquire (Transaction Write)) where
-   getField = commit
-
--- | @'rollback' pool == pool.rollback@
-instance HasField "rollback" (Pool Write) (A.Acquire (Transaction Write)) where
-   getField = rollback
 
 pool :: SMode p -> Di.Df1 -> Settings -> A.Acquire (Pool p)
 pool smode di0 cs = do
@@ -108,28 +111,28 @@ pool smode di0 cs = do
 
 -- | Acquire a read-only transaction.
 --
--- @'read' pool == pool.read@
-read :: Pool mode -> A.Acquire (Transaction Read)
-read p = poolConnectionRead p >>= readTransaction'
+-- @'readTransaction' pool == pool.read@
+readTransaction :: Pool mode -> A.Acquire (Transaction Read)
+readTransaction p = poolConnectionRead p >>= readTransaction'
 
--- | Acquire a read-commit transaction where changes are finally commited to
+-- | Acquire a read-write transaction where changes are finally commited to
 -- the database unless there is an unhandled exception during the transaction,
 -- in which case they are rolled back.
 --
--- @'commit' pool == pool.commit@
-commit :: Pool Write -> A.Acquire (Transaction Write)
-commit (Pool_Write _ c _) = writeTransaction' True c
+-- @'commitTransaction' pool == pool.commit@
+commitTransaction :: Pool Write -> A.Acquire (Transaction Write)
+commitTransaction (Pool_Write _ c _) = writeTransaction' True c
 
--- | Acquire a read-commit transaction where changes are always rolled back.
+-- | Acquire a read-write transaction where changes are always rolled back.
 -- This is mostly useful for testing purposes.
 --
 -- Notice that an equivalent behavior can be achieved by
 -- 'Control.Exception.Safe.bracket'ing changes between 'Sq.savepoint' and
--- 'Sq.rollbackTo' in a 'commit'ting transaction. Or by using 'Ex.throwM'
+-- 'Sq.rollbackTo' in a 'commitTransaction'ting transaction. Or by using 'Ex.throwM'
 -- and 'Ex.catch' within 'Transactional'. However, using this 'rollback'
 -- is much faster.
-rollback :: Pool Write -> A.Acquire (Transaction Write)
-rollback (Pool_Write _ c _) = writeTransaction' False c
+rollbackTransaction :: Pool Write -> A.Acquire (Transaction Write)
+rollbackTransaction (Pool_Write _ c _) = writeTransaction' False c
 
 poolConnectionRead :: Pool mode -> A.Acquire (Connection Read)
 poolConnectionRead p = do

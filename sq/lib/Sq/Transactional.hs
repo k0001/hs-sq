@@ -71,13 +71,15 @@ unTransactional
 unTransactional = coerce
 {-# INLINE unTransactional #-}
 
--- | Run an 'Transactional' with 'transactional'. Example:
+-- | Run all the actions in a 'Transactional' as part of a single
+-- 'Transaction'.
 --
--- @
--- "Sq".'transactional' pool.write do
---    x <- "Sq".'onei' myStatement 123
---    "Sq".'list' anotherStatement x
--- @
+-- __WARNING__: 99% of the times you should use "Sq".'Sq.read' or
+-- "Sq".'Sq.commit' instead of this function, as they ensure that
+-- the 'Transaction' is promptly committed if necessary.
+-- 'transactional' is a lower level function that's necessary
+-- if you expect to reuse the underlying 'Transaction' for more
+-- purposes than running just a single 'Transactional'.
 transactional
    :: (MonadIO m)
    => A.Acquire (Transaction t)

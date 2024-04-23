@@ -19,16 +19,17 @@ data Mode
      -- Obtain with 'Sq.readStatement'.
      --
      -- * A @'Sq.Transaction' \''Read'@ can permorm \''Read'
-     -- 'Sq.Statement's only. Obtain with 'Sq.read'.
+     -- 'Sq.Statement's only. Obtain with 'Sq.readTransaction'.
      --
      -- * A @'Sq.Pool' \''Read'@ can permorm \''Read' 'Sq.Transaction's only.
-     -- Obtain with 'Sq.readPool'.
+     -- Obtain with 'Sq.readPool' or 'Sq.subPool'.
      Read
    | -- | * A @'Sq.Statement' \''Write'@ performs a read or write query.
      -- Obtain with 'Sq.writeStatement'.
      --
      -- * A @'Sq.Transaction' \''Write'@ can permorm both \''Read' and
-     -- \''Write' 'Sq.Statement's. Obtain with 'Sq.commit' or 'Sq.rollback'.
+     -- \''Write' 'Sq.Statement's. Obtain with 'Sq.commitTransaction' or
+     -- 'Sq.rollbackTransaction'.
      --
      -- * A @'Sq.Pool' \''Write'@ can permorm both \''Read' and \''Write'
      -- 'Sq.Transaction's. Obtain with 'Sq.writePool' or 'Sq.tempPool'.

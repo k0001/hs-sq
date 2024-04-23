@@ -49,6 +49,12 @@ module Sq
     -- * Transactional
    , Transactional
    , transactional
+   , read
+   , commit
+   , rollback
+   , Ref
+
+    -- * Executing
    , one
    , maybe
    , zero
@@ -57,19 +63,23 @@ module Sq
    , fold
    , foldM
    , stream
-   , Ref
+
+    -- ** IO
+   , foldIO
+   , streamIO
 
     -- * Transaction
    , Transaction
-   , read
-   , commit
-   , rollback
+   , readTransaction
+   , commitTransaction
+   , rollbackTransaction
 
     -- * Pool
    , Pool
-   , poolRead
-   , poolWrite
-   , poolTemp
+   , readPool
+   , writePool
+   , tempPool
+   , subPool
 
     -- * Settings
    , Settings (..)
@@ -90,8 +100,6 @@ module Sq
    , ErrRows (..)
 
     -- * Miscellaneuos
-   , foldIO
-   , streamIO
    , BindingName
    , Mode (..)
    , SubMode
@@ -145,8 +153,8 @@ import Sq.Transactional
 -- @
 --
 -- 2. Initially, you will need access to a connection 'Pool'. You can
---    'A.Acquire' one through 'poolTemp', 'poolRead' or most commonly
---    __'poolWrite'__.
+--    'A.Acquire' one through 'tempPool', 'readPool' or most commonly
+--    __'writePool'__.
 --
 -- 3. In order to integrate your 'Pool' acquisition choice into your
 --    application's resource management, you will most likely need to use one
@@ -165,7 +173,7 @@ import Sq.Transactional
 --    Here is an example:
 --
 -- @
--- 'with' ('poolWrite' ('settings' \"\/my\/db.sqlite\")) \\(__pool__ :: 'Pool' \''Write') ->
+-- 'with' ('writePool' ('settings' \"\/my\/db.sqlite\")) \\(__pool__ :: 'Pool' \''Write') ->
 --        /-- Here use __pool__ as necessary./
 --        /-- The resources associated with it will be/
 --        /-- automatically released after leaving this scope./
@@ -221,8 +229,8 @@ uith = A.with
 --
 -- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
 -- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
-poolTemp :: Di.Df1 -> A.Acquire (Pool Write)
-poolTemp di0 = do
+tempPool :: Di.Df1 -> A.Acquire (Pool Write)
+tempPool di0 = do
    d <- acquireTmpDir
    let di1 = Di.attr "mode" Write $ Di.push "pool" di0
    pool SWrite di1 $ settings (d </> "db.sqlite")
@@ -231,21 +239,21 @@ poolTemp di0 = do
 --
 -- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
 -- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
-poolWrite :: Di.Df1 -> Settings -> A.Acquire (Pool Write)
-poolWrite di0 s = do
+writePool :: Di.Df1 -> Settings -> A.Acquire (Pool Write)
+writePool di0 s = do
    let di1 = Di.attr "mode" Write $ Di.push "pool" di0
    pool SWrite di1 s
-{-# INLINE poolWrite #-}
+{-# INLINE writePool #-}
 
 -- | Acquire a 'Read'-only 'Pool' according to the given 'Settings'.
 --
 -- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
 -- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
-poolRead :: Di.Df1 -> Settings -> A.Acquire (Pool Read)
-poolRead di0 s = do
+readPool :: Di.Df1 -> Settings -> A.Acquire (Pool Read)
+readPool di0 s = do
    let di1 = Di.attr "mode" Read $ Di.push "pool" di0
    pool SRead di1 s
-{-# INLINE poolRead #-}
+{-# INLINE readPool #-}
 
 --------------------------------------------------------------------------------
 
@@ -325,3 +333,37 @@ fold
    :: (SubMode t s) => F.Fold o z -> Statement s i o -> i -> Transactional g t z
 fold = foldM . F.generalize
 {-# INLINE fold #-}
+
+--------------------------------------------------------------------------------
+
+-- | Execute a 'Read'-only 'Transactional' in a fresh 'Transaction' that will
+-- be automatically released when done.
+--
+-- @'read' t  =  'transactional' ('readTransaction' p)@
+read
+   :: (MonadIO m, SubMode p 'Read)
+   => Pool p
+   -> (forall g. Transactional g 'Read a)
+   -> m a
+read p = transactional $ readTransaction p
+{-# INLINE read #-}
+
+-- | Execute a read-'Write' 'Transactional' in a fresh 'Transaction' that will
+-- be automatically committed when done.
+--
+-- @'commit' t  =  'transactional' ('commitTransaction' p)@
+commit
+   :: (MonadIO m) => Pool 'Write -> (forall g. Transactional g 'Write a) -> m a
+commit p = transactional $ commitTransaction p
+{-# INLINE commit #-}
+
+-- | Execute a read-'Write' 'Transactional' in a fresh 'Transaction' that will
+-- be automatically rolled-back when done.
+--
+-- __This is mostly useful for testing__. See 'rollbackTransaction'.
+--
+-- @'rollback' t  =  'transactional' ('rollbackTransaction' p)@
+rollback
+   :: (MonadIO m) => Pool 'Write -> (forall g. Transactional g 'Write a) -> m a
+rollback p = transactional $ rollbackTransaction p
+{-# INLINE rollback #-}

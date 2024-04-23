@@ -47,8 +47,8 @@ newtype Encode a
      -- Ideally, the type @a@ should be small enough that this function always
      -- returns 'Right'. However, that can sometimes be annoying, so we allow
      -- this function to fail with 'ErrEncode' if necessary, in which case an
-     -- 'ErrInput' exception will be eventually thrown while trying to bind the
-     -- relevant 'Input' to a 'Statement'. For example, not all 'String's can be
+     -- 'Sq.ErrInput' exception will be eventually thrown while trying to bind the
+     -- relevant 'Sq.Input' to a 'Statement'. For example, not all 'String's can be
      -- safely encoded as a 'S.SQLText' because some non-unicode characters
      -- will silently be lost in the conversion. So, we either don't have an
      -- 'Encode'r for 'String' at all, which is annoying, or we have 'ErrEncode'
