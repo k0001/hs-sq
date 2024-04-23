@@ -1,11 +1,15 @@
 module Sq.Transactional
    ( Transactional
-   , transactional
+   , embed
+   , transactionalRetry
    , foldM
    , stream
    , Ref
+   , Retry (..)
    ) where
 
+import Control.Applicative
+import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Exception.Safe qualified as Ex
 import Control.Foldl qualified as F
@@ -17,6 +21,7 @@ import Control.Monad.Ref qualified
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 import Control.Monad.Trans.Resource qualified as R
+import Control.Monad.Trans.Resource.Extra qualified as R hiding (runResourceT)
 import Data.Acquire qualified as A
 import Data.Coerce
 import Data.IORef
@@ -32,6 +37,40 @@ import Sq.Support
 
 --------------------------------------------------------------------------------
 
+-- | Used as the @r@ type-parameter in @'Transactional' g r t a@.
+--
+-- * If the 'Transactional' uses any 'Alternative' or 'MonadPlus' feature, then
+-- @r@ must be 'Retry', and the 'Transactional' can only be executed through
+-- 'Sq.read', 'Sq.commit' or 'Sq.rollback'.
+--
+-- * Otherwise, @r@ can be 'NoRetry'. In that case, 'embed' can
+-- also be used to execute the 'Transactional'.
+data Retry = NoRetry | Retry
+   deriving (Eq, Ord, Show)
+
+data Env (g :: k) (r :: Retry) (t :: Mode) = Env
+   { unique :: STM Int
+   -- ^ Next unique 'Int' within the 'Transactional' to be used as key in 'refs'
+   , refs :: TVar (IntMap (SomeRef g))
+   -- ^ Currently valid 'Ref's. We keep track of them in order to implement
+   -- 'catch'. The 'IntMap' is just for fast diffing purposes.
+   , tx :: Transaction t
+   -- ^ Current transaction.
+   }
+
+acquireEnv :: Transaction t -> A.Acquire (Env g r t)
+acquireEnv tx = do
+   unique :: STM Int <- liftIO do
+      tv <- newTVarIO 0
+      pure $ atomicModifyRef' tv \i -> (i + 1, i)
+   refs :: TVar (IntMap (SomeRef g)) <-
+      R.mkAcquire1 (newTVarIO mempty) \tvsrs ->
+         atomically do
+            srs <- swapTVar tvsrs mempty
+            forM_ srs \(SomeRef (Ref tv)) ->
+               writeTVar tv Nothing
+   pure Env{..}
+
 -- | @'Transactional' g t a@ groups together multiple interactions with a same
 -- @'Transaction' t@ that finally produce a value of type @a@.
 --
@@ -46,11 +85,8 @@ import Sq.Support
 --    x <- "Sq".'one' myStatement 123
 --    "Sq".'list' anotherStatement x
 -- @
-newtype Transactional (g :: k) (t :: Mode) (a :: Type)
-   = Transactional
-      ( (STM Int, TVar (IntMap (SomeRef g)), Transaction t)
-        -> R.ResourceT IO a
-      )
+newtype Transactional (g :: k) (r :: Retry) (t :: Mode) (a :: Type)
+   = Transactional (Env g r t -> R.ResourceT IO a)
    deriving
       ( Functor
       , Applicative
@@ -58,102 +94,140 @@ newtype Transactional (g :: k) (t :: Mode) (a :: Type)
       , Ex.MonadThrow
       , Ex.MonadMask
       )
-      via ( ReaderT
-               (STM Int, TVar (IntMap (SomeRef g)), Transaction t)
-               (R.ResourceT IO)
-          )
+      via (ReaderT (Env g r t) (R.ResourceT IO))
 
--- | Internal only. This doesn't deal with @g@.
-unTransactional
-   :: Transactional g t a
-   -> (STM Int, TVar (IntMap (SomeRef g)), Transaction t)
-   -> R.ResourceT IO a
+-- | INTERNAL only. This doesn't deal with @g@.
+unTransactional :: Transactional g r t a -> Env g r t -> R.ResourceT IO a
 unTransactional = coerce
 {-# INLINE unTransactional #-}
 
--- | Run all the actions in a 'Transactional' as part of a single
+-- | INTERNAL. Use 'Sq.read', 'Sq.commit' or 'Sq.rollback' instead.
+--
+-- Run all the actions in a 'Transactional' as part of a single 'Transaction'.
+transactionalRetry
+   :: forall m r t a
+    . (MonadIO m)
+   => TransactionMaker t
+   -- ^ One of 'Sq.readTransaction', 'Sq.commitTransaction' or
+   -- 'Sq.rollbackTransaction'.
+   -> (forall g. Transactional g r t a)
+   -> m a
+transactionalRetry (TransactionMaker atx) (Transactional f) = liftIO (go 0)
+  where
+   go :: Word -> IO a
+   go !n = Ex.catch run \ErrRetry -> do
+      -- TODO: Wait with `sqlite3_commit_hook` instead of just retrying.
+      let ms = logBase 10 (fromIntegral (max 1 n) :: Double)
+      threadDelay $ truncate (1_000 * ms)
+      go (n + 1)
+   run :: IO a
+   run = R.runResourceT do
+      (_, env) <- A.allocateAcquire $ acquireEnv =<< atx
+      f env
+
+-- | Embeds all the actions in a 'Transactional' as part of an ongoing
 -- 'Transaction'.
 --
--- __WARNING__: 99% of the times you should use "Sq".'Sq.read' or
--- "Sq".'Sq.commit' instead of this function, as they ensure that
--- the 'Transaction' is promptly committed if necessary.
--- 'transactional' is a lower level function that's necessary
--- if you expect to reuse the underlying 'Transaction' for more
--- purposes than running just a single 'Transactional'.
-transactional
-   :: (MonadIO m)
-   => A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once @m@ is evaluated.
-   --
-   -- Most likely you will be using one of @pool.read@ or @pool.commit@ here.
-   -- That is, 'Sq.read' or 'Sq.commit'. This corresponds to the idea that
-   -- no 'Statement' other than the one given to this function will be
-   -- executed during the 'Transaction'.
-   --
-   -- If you already obtained a 'Transaction' by other means, then simply use
-   -- 'pure' to wrap a 'Transaction' in 'A.Acquire'.
-   -> (forall g. Transactional g t a)
+-- Notice that contrary to 'Sq.read', 'Sq.commit' or 'Sq.rollback',
+-- this 'Transactional' cannot retry. That is, it cannot use the
+-- 'Alternative' and 'MonadPlus' features. Doing so would require
+-- cancelling the ongoing 'Transaction'.
+embed
+   :: forall m t a
+    . (MonadIO m)
+   => Transaction t
+   -- ^ Ongoing transaction.
+   -> (forall g. Transactional g 'NoRetry t a)
    -> m a
-transactional atx (Transactional f) = liftIO $ R.runResourceT do
-   sint :: STM Int <- liftIO do
-      tv <- newTVarIO 0
-      pure $ atomicModifyRef' tv \i -> (i + 1, i)
-   (_, tvsrs :: TVar (IntMap (SomeRef g))) <-
-      R.allocate (newTVarIO mempty) \tvsrs ->
-         atomically do
-            srs <- swapTVar tvsrs mempty
-            forM_ srs \(SomeRef (Ref tv)) ->
-               writeTVar tv Nothing
-   (_, tx :: Transaction t) <- A.allocateAcquire atx
-   f (sint, tvsrs, tx)
+embed tx (Transactional f) =
+   liftIO $ R.runResourceT do
+      (_, env) <- A.allocateAcquire $ acquireEnv tx
+      f env
+
+-- | INTERNAL.
+data ErrRetry = ErrRetry
+   deriving stock (Show)
+   deriving anyclass (Ex.Exception)
 
 -- | Like 'Sq.foldIO', but runs in 'Transactional'.
 foldM
    :: (SubMode t s)
-   => F.FoldM (Transactional g t) o z
+   => F.FoldM (Transactional g r t) o z
    -> Statement s i o
    -> i
-   -> Transactional g t z
-foldM f st i = Transactional \env@(_, _, tx) ->
-   foldIO (F.hoists (flip unTransactional env) f) (pure tx) st i
+   -> Transactional g r t z
+foldM f st i = Transactional \env ->
+   embedFoldIO (F.hoists (flip unTransactional env) f) env.tx st i
 
 -- | Like 'Sq.streamIO', but runs in 'Transactional'.
 stream
    :: (SubMode t s)
    => Statement s i o
    -> i
-   -> Z.Stream (Z.Of o) (Transactional g t) ()
+   -> Z.Stream (Z.Of o) (Transactional g r t) ()
 stream = \st i -> do
-   ioref <- lift $ Transactional \(_, _, tx) -> liftIO $ newIORef tx
-   Z.hoist (Transactional . const) $ streamIO (liftIO (readIORef ioref)) st i
+   ioref <- lift $ Transactional \env ->
+      liftIO $ newIORef env.tx
+   Z.hoist (Transactional . const) do
+      streamIO (liftIO (readIORef ioref)) st i
 
--- | 'Ex.catch' behaves like 'Control.Concurrent.STM.catchSTM'.
+-- | 'Ex.catch' behaves like "STM"'s 'catchSTM'.
 --
--- @'Ex.catch' foo bar@ catches any exception thrown by @foo@ using the
--- function @bar@ to handle the exception. If an exception is thrown by @foo@,
--- any 'Transaction'al and 'Ref' changes made by @foo@ are rolled back,
--- but changes prior to @foo@ persist.
-instance Ex.MonadCatch (Transactional g t) where
-   catch act f = Transactional \env@(_, tvsrs, tx) -> do
-      srsRollback <- liftIO $ atomically $ saveSomeRefs tvsrs
-      case tx.smode of
+-- In @'Ex.catch' ma f@, if an exception is thrown by @ma@, then any
+-- database or 'Ref' changes made by @ma@ will be discarded. Furthermore, if
+-- @f@ can handle said exception, then the action resulting from applying @f@
+-- will be executed. Otherwise, if @f@ can't handle the exception, it will
+-- bubble up.
+instance Ex.MonadCatch (Transactional g r t) where
+   catch act f = Transactional \env -> do
+      refsRollback <- liftIO $ atomically $ saveSomeRefs env.refs
+      case env.tx.smode of
          SRead -> Ex.catch (unTransactional act env) \e -> do
-            liftIO $ atomically srsRollback
+            liftIO $ atomically refsRollback
             unTransactional (f e) env
          SWrite ->
             Ex.bracketWithError
-               (savepoint tx)
+               (savepoint env.tx)
                ( \ye sp -> case ye of
                   Nothing ->
                      void $ Ex.tryAny $ savepointRelease sp -- not critical
                   Just se -> do
                      savepointRollback sp
-                     liftIO $ atomically srsRollback
                      void $ Ex.tryAny $ savepointRelease sp -- not critical
+                     liftIO $ atomically refsRollback
                      forM_ (Ex.fromException se) \e ->
                         unTransactional (f e) env
                )
                (\_ -> unTransactional act env)
+
+-- | @
+-- 'empty' = 'mzero'
+-- '(<|>)' = 'mplus'
+-- @
+instance Alternative (Transactional g 'Retry t) where
+   empty = Ex.throwM ErrRetry
+   {-# INLINE empty #-}
+   tl <|> tr = Ex.catch tl \ErrRetry -> tr
+   {-# INLINE (<|>) #-}
+
+-- | * 'mzero' behaves like 'STM''s 'retry'. It causes the current
+-- 'Transaction' to be cancelled so that a new one can take its place and the
+-- entire 'Transactional' is executed again.  This allows the 'Transactional'
+-- to observe a new snapshot of the database.
+--
+-- * 'mplus ma mb' behaves like 'STM''s @'orElse' ma mb@.
+-- If @ma@ completes without executing 'mzero', then that constitutes
+-- the entirety of @'mplus' ma mb@. Otherwise, if @ma@ executed 'mzero', then
+-- all the effects from @ma@ are discared and @mb@ is tried in its place.
+--
+-- __NOTICE__ You only need to use 'mzero' if yow need access to a newer
+-- database snapshot. If all you want to do is undo some 'Ref' transformation
+-- effects, or undo database changes, then use 'catch'.
+instance MonadPlus (Transactional g 'Retry t) where
+   mzero = empty
+   {-# INLINE mzero #-}
+   mplus = (<|>)
+   {-# INLINE mplus #-}
 
 data SomeRef g where
    SomeRef :: Ref g a -> SomeRef g
@@ -181,15 +255,15 @@ newtype Ref g a = Ref (TVar (Maybe a))
       )
 
 -- | All operations are atomic.
-instance MonadRef (Transactional g t) where
-   type Ref (Transactional g t) = Sq.Transactional.Ref g
-   newRef a = Transactional \(sint, tvs, _) -> liftIO $ atomically do
-      i <- sint
+instance MonadRef (Transactional g r t) where
+   type Ref (Transactional g r t) = Sq.Transactional.Ref g
+   newRef a = Transactional \env -> liftIO $ atomically do
+      i <- env.unique
       tv <- newTVar $! Just a
       let ref = Ref tv
       -- Note: We only explicitly remove things from the IntMap through
       -- saveSomeRefs, or when exiting Transactional. Maybe some day we optimize this.
-      modifyTVar' tvs $ IntMap.insert i $! SomeRef ref
+      modifyTVar' env.refs $ IntMap.insert i $! SomeRef ref
       pure ref
    readRef (Ref tv) = Transactional \_ -> liftIO $ atomically do
       readTVar tv >>= \case
@@ -199,7 +273,7 @@ instance MonadRef (Transactional g t) where
    modifyRef r f = atomicModifyRef r \a -> (f a, ())
    modifyRef' r f = atomicModifyRef' r \a -> (f a, ())
 
-instance MonadAtomicRef (Transactional g t) where
+instance MonadAtomicRef (Transactional g r t) where
    atomicModifyRef (Ref tv) f = Transactional \_ -> liftIO $ atomically do
       readTVar tv >>= \case
          Just a0 | (a1, b) <- f a0 -> do

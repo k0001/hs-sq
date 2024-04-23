@@ -48,10 +48,11 @@ module Sq
 
     -- * Transactional
    , Transactional
-   , transactional
+   , Retry(..)
    , read
    , commit
    , rollback
+   , embed
    , Ref
 
     -- * Executing
@@ -66,13 +67,14 @@ module Sq
 
     -- ** IO
    , foldIO
+   , embedFoldIO
    , streamIO
 
     -- * Transaction
    , Transaction
-   , readTransaction
-   , commitTransaction
-   , rollbackTransaction
+   , readTransactionMaker
+   , commitTransactionMaker
+   , rollbackTransactionMaker
 
     -- * Pool
    , Pool
@@ -291,21 +293,21 @@ writeStatement = statement
 -- | Executes a 'Statement' expected to return zero or one rows.
 --
 -- Throws 'ErrRows_TooMany' if more than one row.
-maybe :: (SubMode t s) => Statement s i o -> i -> Transactional g t (Maybe o)
+maybe :: (SubMode t s) => Statement s i o -> i -> Transactional g r t (Maybe o)
 maybe = foldM $ foldMaybeM ErrRows_TooMany
 {-# INLINE maybe #-}
 
 -- | Executes a 'Statement' expected to return exactly one row.
 --
 -- Throws 'ErrRows_TooFew' if zero rows, 'ErrRows_TooMany' if more than one row.
-one :: (SubMode t s) => Statement s i o -> i -> Transactional g t o
+one :: (SubMode t s) => Statement s i o -> i -> Transactional g r t o
 one = foldM $ foldOneM ErrRows_TooFew ErrRows_TooMany
 {-# INLINE one #-}
 
 -- | Executes a 'Statement' expected to return exactly zero rows.
 --
 -- Throws 'ErrRows_TooMany' if more than zero rows.
-zero :: (SubMode t s) => Statement s i o -> i -> Transactional g t ()
+zero :: (SubMode t s) => Statement s i o -> i -> Transactional g r t ()
 zero = foldM $ foldZeroM ErrRows_TooMany
 {-# INLINE zero #-}
 
@@ -317,20 +319,20 @@ some
    :: (SubMode t s)
    => Statement s i o
    -> i
-   -> Transactional g t (Int64, NonEmpty o)
+   -> Transactional g r t (Int64, NonEmpty o)
 some = foldM $ foldNonEmptyM ErrRows_TooFew
 {-# INLINE some #-}
 
 -- | Executes a 'Statement' expected to return an arbitrary
 -- number of rows.  Returns the length of the list, too.
-list :: (SubMode t s) => Statement s i o -> i -> Transactional g t (Int64, [o])
+list :: (SubMode t s) => Statement s i o -> i -> Transactional g r t (Int64, [o])
 list = fold foldList
 {-# INLINE list #-}
 
 -- | Executes a 'Statement' and folds the rows purely in a
 -- streaming fashion.
 fold
-   :: (SubMode t s) => F.Fold o z -> Statement s i o -> i -> Transactional g t z
+   :: (SubMode t s) => F.Fold o z -> Statement s i o -> i -> Transactional g r t z
 fold = foldM . F.generalize
 {-# INLINE fold #-}
 
@@ -343,9 +345,9 @@ fold = foldM . F.generalize
 read
    :: (MonadIO m, SubMode p 'Read)
    => Pool p
-   -> (forall g. Transactional g 'Read a)
+   -> (forall g. Transactional g r 'Read a)
    -> m a
-read p = transactional $ readTransaction p
+read p = transactionalRetry $ readTransactionMaker p
 {-# INLINE read #-}
 
 -- | Execute a read-'Write' 'Transactional' in a fresh 'Transaction' that will
@@ -353,8 +355,8 @@ read p = transactional $ readTransaction p
 --
 -- @'commit' t  =  'transactional' ('commitTransaction' p)@
 commit
-   :: (MonadIO m) => Pool 'Write -> (forall g. Transactional g 'Write a) -> m a
-commit p = transactional $ commitTransaction p
+   :: (MonadIO m) => Pool 'Write -> (forall g. Transactional g r 'Write a) -> m a
+commit p = transactionalRetry $ commitTransactionMaker p
 {-# INLINE commit #-}
 
 -- | Execute a read-'Write' 'Transactional' in a fresh 'Transaction' that will
@@ -364,6 +366,6 @@ commit p = transactional $ commitTransaction p
 --
 -- @'rollback' t  =  'transactional' ('rollbackTransaction' p)@
 rollback
-   :: (MonadIO m) => Pool 'Write -> (forall g. Transactional g 'Write a) -> m a
-rollback p = transactional $ rollbackTransaction p
+   :: (MonadIO m) => Pool 'Write -> (forall g. Transactional g r 'Write a) -> m a
+rollback p = transactionalRetry $ rollbackTransactionMaker p
 {-# INLINE rollback #-}

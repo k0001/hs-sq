@@ -5,12 +5,15 @@
 module Sq.Connection
    ( Connection
    , connection
+   , TransactionMaker (..)
+   , transaction
    , Transaction (smode)
    , Settings (..)
    , settings
-   , readTransaction'
-   , writeTransaction'
+   , readTransactionMaker'
+   , writeTransactionMaker'
    , foldIO
+   , embedFoldIO
    , streamIO
    , ConnectionId (..)
    , TransactionId (..)
@@ -36,6 +39,7 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
+import Data.Coerce
 import Data.Foldable
 import Data.Function (fix)
 import Data.Functor
@@ -313,11 +317,17 @@ setBusyHandler (S.Database pDB) tmaxMS = do
             else poke pt0 t1 $> t1
       if Clock.toNanoSecs (Clock.diffTimeSpec t1 t0) < tmaxNS
          then do
-            let ms = ceiling $ logBase 2 (fromIntegral n :: Double)
+            let ms = ceiling $ logBase 10 (fromIntegral (max 1 n) :: Double)
             c_sqlite3_sleep ms $> 1
          else pure 0
 
 --------------------------------------------------------------------------------
+
+newtype TransactionMaker (t :: Mode)
+   = TransactionMaker (A.Acquire (Transaction t))
+
+transaction :: TransactionMaker t -> A.Acquire (Transaction t)
+transaction = coerce
 
 -- | A database transaction handle.
 --
@@ -363,9 +373,9 @@ instance NFData (Transaction t) where
 instance HasField "id" (Transaction t) TransactionId where
    getField = (._id)
 
-readTransaction'
-   :: (SubMode c Read) => Connection c -> A.Acquire (Transaction Read)
-readTransaction' c = do
+readTransactionMaker'
+   :: (SubMode c Read) => Connection c -> TransactionMaker 'Read
+readTransactionMaker' c = TransactionMaker do
    xc <- lockConnection c
    tId <- newTransactionId
    let di1 = Di.attr "mode" Read $ Di.attr "id" tId $ Di.push "transaction" c.di
@@ -393,13 +403,13 @@ readTransaction' c = do
          , smode = SRead
          }
 
-writeTransaction'
+writeTransactionMaker'
    :: Bool
    -- ^ Whether to finally @COMMIT@ the transaction.
    -- Otherwise, it will @ROLLBACK@.
-   -> Connection Write
-   -> A.Acquire (Transaction Write)
-writeTransaction' commit c = do
+   -> Connection 'Write
+   -> TransactionMaker 'Write
+writeTransactionMaker' commit c = TransactionMaker do
    xc <- lockConnection c
    tId <- newTransactionId
    let di1 =
@@ -559,21 +569,32 @@ data ErrRows
 foldIO
    :: (MonadIO m, Ex.MonadMask m, SubMode t s)
    => F.FoldM m o z
-   -> A.Acquire (Transaction t)
-   -- ^ See the documentation for 'streamIO'.
+   -> TransactionMaker t
    -> Statement s i o
    -> i
    -> m z
-foldIO (F.FoldM !fstep !finit !fext) !atx !st !i = do
+foldIO (F.FoldM fstep finit fext) (TransactionMaker atx) st0 i = do
+   let !st1 = bindStatement st0 i
    acc0 <- finit
-   R.withAcquire (transactionBoundPreparedStatement atx st i) \ps ->
+   R.withAcquire (transactionBoundPreparedStatement atx st1 ()) \ps ->
       flip fix acc0 \k !acc ->
          liftIO (S.step ps.handle) >>= \case
             S.Row -> do
-               eo <- liftIO $ runStatementOutput st \n ->
+               eo <- liftIO $ runStatementOutput st1 \n ->
                   traverse (S.column ps.handle) (Map.lookup n ps.columns)
                either Ex.throwM (fstep acc >=> k) eo
             S.Done -> fext acc
+
+-- | Like 'foldIO', except it takes an ongoing 'Transaction' whose
+-- release is managed elsewhere.
+embedFoldIO
+   :: (MonadIO m, Ex.MonadMask m, SubMode t s)
+   => F.FoldM m o z
+   -> Transaction t
+   -> Statement s i o
+   -> i
+   -> m z
+embedFoldIO f tx = foldIO f (TransactionMaker (pure tx))
 
 -- | Stream the output rows from a 'Statement' in a way that allows
 -- interleaving 'IO' actions.
@@ -643,6 +664,7 @@ streamIO !atx !st i = do
                   -- the transaction early.
                   Left <$> R.releaseType k A.ReleaseEarly
 
+-- TODO: Using this function is awkward. Fix it.
 transactionBoundPreparedStatement
    :: (SubMode t s)
    => A.Acquire (Transaction t)
@@ -650,7 +672,7 @@ transactionBoundPreparedStatement
    -> i
    -> A.Acquire PreparedStatement
 transactionBoundPreparedStatement !atx !st !i = do
-   -- TODO: Could we safely prepare and bind a statement before acquiring
+   -- TODO: Could we safely prepare and bind a raw statement before acquiring
    -- the transaction/connection lock? That would be more efficient.
    binput <- liftIO $ either Ex.throwM evaluate $ runStatementInput st i
    Transaction{conn, di = di0} <- atx

@@ -77,7 +77,7 @@ tree iop =
          , testProperty "db" $ H.property do
             p <- liftIO iop
             a0 <- H.forAll ga
-            a1 <- Sq.transactional p.read $ Sq.one idStatement a0
+            a1 <- Sq.read p $ Sq.one idStatement a0
             a0 H.=== a1
          ]
 

@@ -56,18 +56,18 @@ run pool nw = bench (show nw) $ nfIO do
    forM_ [1 .. nw] \i -> do
       waitQSem semForkW
       Async.link =<< Async.async do
-         o1 <- Sq.transactional pool.commit $ Sq.one stInsert i
+         o1 <- Sq.commit pool $ Sq.one stInsert i
          add 'I'
          when (o1 /= i) $ Ex.throwString "stInsert: o /= i"
          void $
             waitAll =<< forM [0 .. 9] \(j :: Int) -> do
                waitQSem semForkR
                Async.async do
-                  o2 <- Sq.transactional pool.read $ Sq.one stRead i
+                  o2 <- Sq.read pool $ Sq.one stRead i
                   add $ digitChar j
                   when (o2 /= i) $ Ex.throwString "stRead: o /= i"
                   signalQSem semForkR
-         o3 <- Sq.transactional pool.commit $ Sq.one stDelete i
+         o3 <- Sq.commit pool $ Sq.one stDelete i
          add 'D'
          when (o3 /= i) $ Ex.throwString "stDelete: o /= i"
          signalQSemN semDone 1
@@ -93,12 +93,12 @@ stRead = Sq.readStatement "i" "x" "SELECT x FROM t WHERE x=$i"
 stDelete :: Sq.Statement Sq.Write Int Int
 stDelete = Sq.writeStatement "i" "x" "DELETE FROM t WHERE x=$i RETURNING x"
 
-withPoolTmp :: Di.Df1 -> (Sq.Pool Sq.Write -> Benchmark) -> Benchmark
-withPoolTmp di k =
+withTempPool :: Di.Df1 -> (Sq.Pool Sq.Write -> Benchmark) -> Benchmark
+withTempPool di k =
    envWithCleanup
       ( do
-         (pool, rel) <- R.withRestoreIO $ R.unAcquire $ Sq.poolTemp di
-         Sq.transactional pool.commit $ Sq.zero stCreate ()
+         (pool, rel) <- R.withRestoreIO $ R.unAcquire $ Sq.tempPool di
+         Sq.commit pool $ Sq.zero stCreate ()
          pure (pool, rel)
       )
       (\(_, rel) -> rel A.ReleaseNormal)
@@ -110,6 +110,6 @@ main = Di.new \di0 -> do
    defaultMain
       [ bgroup
          "sq"
-         [ withPoolTmp di1 \ ~pool -> run pool 100
+         [ withTempPool di1 \ ~pool -> run pool 100
          ]
       ]

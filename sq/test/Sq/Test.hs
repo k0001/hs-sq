@@ -21,7 +21,7 @@ import Sq.Test.Codec qualified
 --------------------------------------------------------------------------------
 
 tree :: Di.Df1 -> TestTree
-tree di = withAcquire (Sq.poolTemp di) \iop ->
+tree di = withAcquire (Sq.tempPool di) \iop ->
    testGroup
       "sq"
       [ {- This code randomly hangs for some reason. It seems to be related
@@ -42,7 +42,7 @@ tree di = withAcquire (Sq.poolTemp di) \iop ->
              stRead = Sq.readStatement mempty "x" "SELECT x FROM t"
          pool <- liftIO iop
          xs :: [Int] <- H.forAll $ H.list (HR.constant 0 100) H.enumBounded
-         (ysLen, ys) <- Sq.transactional pool.rollback do
+         (ysLen, ys) <- Sq.rollback pool do
             Sq.zero stCreate ()
             traverse_ (Sq.zero stInsert) xs
             Sq.list stRead ()
