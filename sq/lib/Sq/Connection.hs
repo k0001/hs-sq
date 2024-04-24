@@ -192,7 +192,7 @@ lockConnection c =
             Just xc -> pure xc
             Nothing -> Ex.throwString "Timeout"
       )
-      (atomically . fmap (const ()) . tryPutTMVar c.xconn . Just)
+      (atomically . void . tryPutTMVar c.xconn . Just)
 
 data DatabaseMessage
    = forall x.
@@ -612,8 +612,8 @@ streamIO atx st i = do
    bs <- liftIO $ hushThrow $ bindStatement st i
    (k, typop) <- lift $ A.allocateAcquire do
       pop <- rowPopper bs =<< atx
-      R.mkAcquire1 (newTMVarIO (Just pop)) \typop ->
-         atomically $ tryTakeTMVar typop >> putTMVar typop Nothing
+      R.mkAcquire1 (newTMVarIO (Just pop)) \tmv -> do
+         atomically $ tryTakeTMVar tmv >> putTMVar tmv Nothing
    Z.untilLeft $ liftIO $ Ex.mask \restore ->
       Ex.bracket
          ( atomically do
@@ -621,11 +621,10 @@ streamIO atx st i = do
                Just pop -> pure pop
                Nothing -> Ex.throwM $ resourceVanishedWithCallStack "streamIO"
          )
-         (atomically . fmap (const ()) . tryPutTMVar typop . Just)
-         ( \pop ->
-            restore pop >>= \case
-               Just o -> pure $ Right o
-               Nothing -> Left <$> R.releaseType k A.ReleaseEarly
+         (atomically . tryPutTMVar typop . Just)
+         ( restore >=> \case
+            Just o -> pure $ Right o
+            Nothing -> Left <$> R.releaseType k A.ReleaseEarly
          )
 
 -- | Acquires an 'IO' action that will yield the next output row each time it

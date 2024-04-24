@@ -1,6 +1,9 @@
 module Sq.Null (Null (..)) where
 
 -- | The @NULL@ SQL datatype.
+--
+-- Mostly useful for its 'Sq.EncodeDefault' and 'Sq.DecodeDefault'
+-- instances.
 data Null = Null
    deriving stock (Eq, Ord, Show)
 

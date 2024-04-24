@@ -8,10 +8,13 @@ module Sq.Encoders
    , encodeSizedIntegral
    , encodeBinary
    , encodeShow
+   , encodeAeson
    )
 where
 
 import Control.Exception.Safe qualified as Ex
+import Data.Aeson qualified as Ae
+import Data.Aeson.Text qualified as Ae
 import Data.Bifunctor
 import Data.Binary.Put qualified as Bin
 import Data.Bits
@@ -48,11 +51,12 @@ newtype Encode a
      -- returns 'Right'. However, that can sometimes be annoying, so we allow
      -- this function to fail with 'ErrEncode' if necessary, in which case an
      -- 'Sq.ErrInput' exception will be eventually thrown while trying to bind the
-     -- relevant 'Sq.Input' to a 'Statement'. For example, not all 'String's can be
-     -- safely encoded as a 'S.SQLText' because some non-unicode characters
-     -- will silently be lost in the conversion. So, we either don't have an
-     -- 'Encode'r for 'String' at all, which is annoying, or we have 'ErrEncode'
-     -- here to safely deal with those obscure corner cases.
+     -- relevant 'Sq.Input' to a 'Statement'. Why? Because for example, not all
+     -- 'String's can be safely encoded as a 'S.SQLText' seeing as some
+     -- non-unicode characters will silently be lost in the conversion. So, we
+     -- could either not have an 'Encode'r for 'String' at all, which would be
+     -- annoying, or we could have 'ErrEncode' as we do here in order to safely
+     -- deal with those obscure corner cases.
      Encode (a -> Either ErrEncode S.SQLData)
    deriving (Contravariant) via Op (Either ErrEncode S.SQLData)
 
@@ -69,9 +73,10 @@ newtype ErrEncode = ErrEncode Ex.SomeException
 
 -- | Default way to encode a Haskell value of type @a@ into a SQLite value.
 --
--- If there there exist a 'Sq.DecodeDefault' value for @a@, then these two
--- instances must roundtrip.
+-- If there there exist also a 'Sq.DecodeDefault' instance for @a@, then it
+-- must roundtrip with the 'Sq.EncodeDefault' instance for @a@.
 class EncodeDefault a where
+   -- | Default way to encode a Haskell value of type @a@ into a SQLite value.
    encodeDefault :: (HasCallStack) => Encode a
 
 -- | A convenience function for refining an 'Encode'r through a function that
@@ -154,6 +159,7 @@ instance
    where
    encodeDefault = encodeEither encodeDefault encodeDefault
 
+-- | @a@'s 'S.ColumnType' if 'Left', otherwise @b@'s 'S.ColumnType'.
 encodeEither :: Encode a -> Encode b -> Encode (Either a b)
 encodeEither (Encode fa) (Encode fb) = Encode $ either fa fb
 {-# INLINE encodeEither #-}
@@ -272,9 +278,14 @@ instance EncodeDefault Time.UTCTime where
 --------------------------------------------------------------------------------
 
 encodeBinary :: (a -> Bin.Put) -> Encode a
-encodeBinary f = contramap (Bin.runPut . f) encodeDefault
+encodeBinary f = contramap (Bin.runPut . f) (encodeDefault @BL.ByteString)
 {-# INLINE encodeBinary #-}
 
 encodeShow :: (Show a) => Encode a
-encodeShow = show >$< encodeDefault
+encodeShow = show >$< (encodeDefault @String)
 {-# INLINE encodeShow #-}
+
+-- | Encodes as 'S.TextColumn'.
+encodeAeson :: (a -> Ae.Value) -> Encode a
+encodeAeson f = contramap (Ae.encodeToLazyText . f) (encodeDefault @TL.Text)
+{-# INLINE encodeAeson #-}

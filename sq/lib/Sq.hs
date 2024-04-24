@@ -6,7 +6,8 @@ module Sq
     Statement
    , readStatement
    , writeStatement
-   , bindStatement
+
+    -- ** SQL
    , SQL
    , sql
 
@@ -22,6 +23,7 @@ module Sq
    , encodeMaybe
    , encodeEither
    , encodeSizedIntegral
+   , encodeAeson
    , encodeBinary
    , encodeShow
 
@@ -37,6 +39,7 @@ module Sq
    , decodeMaybe
    , decodeEither
    , decodeSizedIntegral
+   , decodeAeson
    , decodeBinary
    , decodeRead
 

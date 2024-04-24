@@ -31,15 +31,28 @@ import Sq.Output
 
 --------------------------------------------------------------------------------
 
--- | Raw SQL String. Completely unsafe.
+-- | Raw SQL string. Completely unchecked.
 newtype SQL = SQL T.Text
-   deriving newtype (Eq, Ord, Show, IsString, Semigroup, NFData)
+   deriving newtype
+      ( Eq
+      , Ord
+      , -- | Raw SQL string.
+        Show
+      , IsString
+      , Semigroup
+      , NFData
+      )
 
 instance Di.ToMessage SQL where
    message = Di.message . show
 
+-- | Raw SQL string as 'T.Text'.
 instance HasField "text" SQL T.Text where getField = coerce
 
+-- | A 'QuasiQuoter' for raw SQL strings.
+--
+-- __WARNING:__ This doesn't check the validity of the SQL. It is offered simply
+-- because writing multi-line strings in Haskell is otherwise very annoying.
 sql :: QuasiQuoter
 sql =
    QuasiQuoter

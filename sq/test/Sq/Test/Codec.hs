@@ -2,10 +2,13 @@ module Sq.Test.Codec (tree) where
 
 import Control.Exception.Safe qualified as Ex
 import Control.Monad.IO.Class
+import Data.Aeson qualified as Ae
+import Data.Binary qualified as Bin
 import Data.Bits
 import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
 import Data.Fixed
+import Data.Functor.Contravariant
 import Data.Int
 import Data.Maybe
 import Data.Text qualified as T
@@ -48,9 +51,9 @@ tree iop =
       , t @String $ H.string (HR.constant 0 50) H.unicode
       , t @T.Text $ H.text (HR.constant 0 50) H.unicode
       , t @TL.Text $ fmap TL.fromStrict $ H.text (HR.constant 0 50) H.unicode
-      , t @B.ByteString $ H.bytes (HR.constant 0 50)
-      , t @BL.ByteString $ fmap BL.fromStrict $ H.bytes (HR.constant 0 50)
-      , t @Time.UTCTime $ genUTCTime (HR.constantFrom epochUTCTime minUTCTime maxUTCTime)
+      , t2 @B.ByteString $ H.bytes (HR.constant 0 50)
+      , t2 @BL.ByteString $ fmap BL.fromStrict $ H.bytes (HR.constant 0 50)
+      , t2 @Time.UTCTime $ genUTCTime (HR.constantFrom epochUTCTime minUTCTime maxUTCTime)
       , t @Double $ H.double (HR.constantFrom 0 (fromIntegral minInteger) (fromIntegral maxInteger))
       , t @Float $ H.float (HR.constantFrom 0 (fromIntegral minInteger) (fromIntegral maxInteger))
       -- TODO FAIL: , testProperty "Char" $ t @Char (pure '\55296')
@@ -58,10 +61,31 @@ tree iop =
   where
    t
       :: forall a
-       . (Typeable a, Eq a, Show a, Sq.EncodeDefault a, Sq.DecodeDefault a)
+       . ( Typeable a
+         , Eq a
+         , Show a
+         , Sq.EncodeDefault a
+         , Sq.DecodeDefault a
+         , Bin.Binary a
+         , Ae.ToJSON a
+         , Ae.FromJSON a
+         )
       => H.Gen a
       -> TestTree
    t ga =
+      testGroup
+         (tyConName (typeRepTyCon (typeRep ga)))
+         [ testGroup "raw" [t2 ga]
+         , testGroup "binary" [t2 (WrapBinary <$> ga)]
+         , testGroup "aeson" [t2 (WrapAeson <$> ga)]
+         ]
+
+   t2
+      :: forall a
+       . (Typeable a, Eq a, Show a, Sq.EncodeDefault a, Sq.DecodeDefault a)
+      => H.Gen a
+      -> TestTree
+   t2 ga =
       testGroup
          (tyConName (typeRepTyCon (typeRep ga)))
          [ testProperty "pure" $ H.property do
@@ -80,6 +104,25 @@ tree iop =
             a1 <- Sq.read p $ Sq.one idStatement a0
             a0 H.=== a1
          ]
+
+newtype WrapBinary a = WrapBinary a
+   deriving newtype (Eq, Show)
+
+instance (Bin.Binary a) => Sq.EncodeDefault (WrapBinary a) where
+   encodeDefault = contramap (\case WrapBinary a -> a) $ Sq.encodeBinary Bin.put
+
+instance (Bin.Binary a) => Sq.DecodeDefault (WrapBinary a) where
+   decodeDefault = WrapBinary <$> Sq.decodeBinary Bin.get
+
+newtype WrapAeson a = WrapAeson a
+   deriving newtype (Eq, Show)
+
+instance (Ae.ToJSON a) => Sq.EncodeDefault (WrapAeson a) where
+   encodeDefault =
+      contramap (\case WrapAeson a -> a) $ Sq.encodeAeson Ae.toJSON
+
+instance (Ae.FromJSON a) => Sq.DecodeDefault (WrapAeson a) where
+   decodeDefault = WrapAeson <$> Sq.decodeAeson Ae.parseJSON
 
 idStatement
    :: (Sq.EncodeDefault x, Sq.DecodeDefault x)

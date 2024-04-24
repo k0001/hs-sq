@@ -8,6 +8,7 @@ module Sq.Decoders
    , decodeSizedIntegral
    , decodeBinary
    , decodeRead
+   , decodeAeson
    ) where
 
 import Control.Applicative
@@ -15,6 +16,8 @@ import Control.Exception.Safe qualified as Ex
 import Control.Monad
 import Control.Monad.Catch qualified as Ex (MonadThrow (..))
 import Control.Monad.Trans.Reader
+import Data.Aeson qualified as Ae
+import Data.Aeson.Types qualified as Ae
 import Data.Bifunctor
 import Data.Binary.Get qualified as Bin
 import Data.Bits
@@ -119,9 +122,10 @@ decodeRefine f (Decode g) = Decode \raw -> do
 
 -- | Default way to decode a SQLite value into a Haskell value of type @a@.
 --
--- If there there exist a 'Sq.EncodeDefault' value for @a@, then these two
--- instances must roundtrip.
+-- If there there exist also a 'Sq.EncodeDefault' instance for @a@, then it
+-- must roundtrip with the 'Sq.DecodeDefault' instance for @a@.
 class DecodeDefault a where
+   -- | Default way to decode a SQLite value into a Haskell value of type @a@.
    decodeDefault :: Decode a
 
 -- | Literal 'S.SQLData' 'Decode'.
@@ -323,11 +327,19 @@ instance DecodeDefault Float where
 --------------------------------------------------------------------------------
 
 decodeBinary :: Bin.Get a -> Decode a
-decodeBinary ga = flip decodeRefine decodeDefault \bl ->
+decodeBinary ga = flip decodeRefine (decodeDefault @BL.ByteString) \bl ->
    case Bin.runGetOrFail ga bl of
       Right (_, _, a) -> Right a
       Left (_, _, s) -> Left s
 
 decodeRead :: (Prelude.Read a) => Decode a
-decodeRead = decodeRefine readEither decodeDefault
+decodeRead = decodeRefine readEither (decodeDefault @String)
 {-# INLINE decodeRead #-}
+
+-- | Decodes 'S.TextColumn' only.
+decodeAeson :: forall a. (Ae.Value -> Ae.Parser a) -> Decode a
+decodeAeson p =
+   decodeRefine
+      (Ae.eitherDecodeStrictText >=> Ae.parseEither p)
+      (decodeDefault @T.Text)
+{-# INLINE decodeAeson #-}

@@ -29,16 +29,16 @@ import Sq.Names
 
 -- | Encodes all the input to a single 'Statement'.
 --
--- * Construct with 'encode' or 'IsString'.
+-- * Construct with ''encode', 'IsString'.
 --
--- * Compose with 'input', 'Contravariant', 'Divisible', 'Decidable',
--- 'Semigroup' or 'Monoid'
+-- * Nest with 'input'.
+--
+-- * Compose with 'Decidable' and 'Monoid' tools.
 newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncode S.SQLData))
    deriving newtype
       ( Semigroup
         -- ^ Left-biased in case of overlapping 'BindingName's.
       , Monoid
-        -- ^ Left-biased in case of overlapping 'BindingName's.
       , NFData
       )
    deriving
@@ -65,7 +65,7 @@ runInput = coerce
 --    => 'Sq.Statement' 'Sq.Write' x ()
 -- @
 --
--- Multiple 'Input's can be combined:
+-- Multiple 'Input's can be composed with 'Decidable' and 'Monoid' tools.
 --
 -- @
 -- 'Sq.writeStatement'
@@ -93,8 +93,8 @@ encode :: Name -> Encode i -> Input i
 encode n (Encode f) = Input (Map.singleton (bindingName n) . f)
 {-# INLINE encode #-}
 
--- | Add a prefix to all the parameters in the 'Input', separated by @\__@
--- from the rest of the 'Name'.
+-- | Add a prefix 'Name' to parameters names in the given 'Input',
+-- separated by @\__@
 --
 -- This is useful for making reusable 'Input's. For example,
 -- consider the following.
@@ -134,7 +134,7 @@ input n ba = Input \s ->
 --    => 'Sq.Statement' 'Sq.Write' a ()
 -- @
 --
--- Multiple 'Input's can be combined using 'Contravariant' tools:
+-- Multiple 'Input's can be composed with 'Decidable' and 'Monoid' tools.
 --
 -- @
 -- 'Sq.writeStatement'

@@ -28,7 +28,7 @@ common basic
     DerivingVia
     DuplicateRecordFields
     LambdaCase
-    MultiWayIf
+    ImplicitParams
     OverloadedRecordDot
     OverloadedStrings
     RecordWildCards
@@ -54,6 +54,7 @@ library
     Sq.Support
     Sq.Transactional
   build-depends:
+    aeson,
     async,
     attoparsec,
     binary,
@@ -92,6 +93,8 @@ test-suite test
     Sq.Test
     Sq.Test.Codec
   build-depends:
+    aeson,
+    binary,
     bytestring,
     di,
     di-core,

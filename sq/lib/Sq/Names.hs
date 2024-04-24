@@ -57,6 +57,11 @@ pName = flip (AT.<?>) "pName" do
 
 -- | A non-empty list of 'Name's that can be rendered as 'Sq.Input' or
 -- 'Sq.Output' parameters in a 'Sq.Statement'.
+--
+-- As a user of "Sq", you never construct a 'BindingName' manually. Rather,
+-- uses of 'Sq.input' and 'Sq.output' build one for you from its 'Name'
+-- constituents. 'BindingName's are only exposed to you through 'Sq.ErrInput',
+-- 'Sq.ErrOutput' and 'Sq.ErrStatement'.
 newtype BindingName = BindingName (NonEmpty Name)
    deriving newtype (Eq, Ord, Show, NFData, Semigroup)
 
