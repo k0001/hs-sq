@@ -5,9 +5,9 @@ module Sq.Pool
    ( Pool
    , pool
    , subPool
-   , readTransactionMaker
-   , commitTransactionMaker
-   , rollbackTransactionMaker
+   , readTransaction
+   , commitTransaction
+   , rollbackTransaction
    )
 where
 
@@ -84,7 +84,7 @@ instance HasField "id" (Pool p) PoolId where
 pool :: SMode p -> Di.Df1 -> Settings -> A.Acquire (Pool p)
 pool smode di0 cs = do
    pId <- newPoolId
-   let di1 = Di.attr "id" pId di0
+   let di1 = Di.attr "pool-mode" smode $ Di.attr "pool" pId di0
    ppcr <- ppoolConnRead di1
    case smode of
       SRead -> pure $ Pool_Read pId ppcr
@@ -110,31 +110,28 @@ pool smode di0 cs = do
 
 -- | Acquire a read-only transaction.
 --
--- @'readTransactionMaker' pool == pool.read@
-readTransactionMaker :: Pool mode -> TransactionMaker 'Read
-readTransactionMaker p = TransactionMaker do
-   c <- poolConnectionRead p
-   case readTransactionMaker' c of
-      TransactionMaker a -> a
+-- @'readTransaction' pool == pool.read@
+readTransaction :: Pool mode -> A.Acquire (Transaction 'Read)
+readTransaction p = poolConnectionRead p >>= connectionReadTransaction
 
 -- | Acquire a read-write transaction where changes are finally commited to
 -- the database unless there is an unhandled exception during the transaction,
 -- in which case they are rolled back.
 --
--- @'commitTransactionMaker' pool == pool.commit@
-commitTransactionMaker :: Pool Write -> TransactionMaker 'Write
-commitTransactionMaker (Pool_Write _ c _) = writeTransactionMaker' True c
+-- @'commitTransaction' pool == pool.commit@
+commitTransaction :: Pool Write -> A.Acquire (Transaction 'Write)
+commitTransaction (Pool_Write _ c _) = connectionWriteTransaction True c
 
 -- | Acquire a read-write transaction where changes are always rolled back.
 -- This is mostly useful for testing purposes.
 --
 -- Notice that an equivalent behavior can be achieved by
 -- 'Control.Exception.Safe.bracket'ing changes between 'Sq.savepoint' and
--- 'Sq.rollbackTo' in a 'commitTransactionMaker'ting transaction. Or by using 'Ex.throwM'
+-- 'Sq.rollbackTo' in a 'commitTransaction'ting transaction. Or by using 'Ex.throwM'
 -- and 'Ex.catch' within 'Transactional'. However, using this 'rollback'
 -- is much faster.
-rollbackTransactionMaker :: Pool Write -> TransactionMaker 'Write
-rollbackTransactionMaker (Pool_Write _ c _) = writeTransactionMaker' False c
+rollbackTransaction :: Pool Write -> A.Acquire (Transaction 'Write)
+rollbackTransaction (Pool_Write _ c _) = connectionWriteTransaction False c
 
 poolConnectionRead :: Pool mode -> A.Acquire (Connection Read)
 poolConnectionRead p = do

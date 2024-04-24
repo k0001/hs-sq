@@ -24,7 +24,6 @@ import Control.Monad.Trans.Resource qualified as R
 import Control.Monad.Trans.Resource.Extra qualified as R hiding (runResourceT)
 import Data.Acquire qualified as A
 import Data.Coerce
-import Data.IORef
 import Data.IntMap.Strict (IntMap)
 import Data.IntMap.Strict qualified as IntMap
 import Data.Kind
@@ -101,18 +100,16 @@ unTransactional :: Transactional g r t a -> Env g r t -> R.ResourceT IO a
 unTransactional = coerce
 {-# INLINE unTransactional #-}
 
--- | INTERNAL. Use 'Sq.read', 'Sq.commit' or 'Sq.rollback' instead.
+-- | INTERNAL. Used to implement 'Sq.read', 'Sq.commit' and 'Sq.rollback'.
 --
 -- Run all the actions in a 'Transactional' as part of a single 'Transaction'.
 transactionalRetry
    :: forall m r t a
     . (MonadIO m)
-   => TransactionMaker t
-   -- ^ One of 'Sq.readTransaction', 'Sq.commitTransaction' or
-   -- 'Sq.rollbackTransaction'.
+   => A.Acquire (Transaction t)
    -> (forall g. Transactional g r t a)
    -> m a
-transactionalRetry (TransactionMaker atx) (Transactional f) = liftIO (go 0)
+transactionalRetry atx (Transactional f) = liftIO (go 0)
   where
    go :: Word -> IO a
    go !n = Ex.catch run \ErrRetry -> do
@@ -157,7 +154,7 @@ foldM
    -> i
    -> Transactional g r t z
 foldM f st i = Transactional \env ->
-   embedFoldIO (F.hoists (flip unTransactional env) f) env.tx st i
+   foldIO (F.hoists (flip unTransactional env) f) (pure env.tx) st i
 
 -- | Like 'Sq.streamIO', but runs in 'Transactional'.
 stream
@@ -166,10 +163,8 @@ stream
    -> i
    -> Z.Stream (Z.Of o) (Transactional g r t) ()
 stream = \st i -> do
-   ioref <- lift $ Transactional \env ->
-      liftIO $ newIORef env.tx
-   Z.hoist (Transactional . const) do
-      streamIO (liftIO (readIORef ioref)) st i
+   tx <- lift $ Transactional \env -> pure env.tx
+   Z.hoist (Transactional . const) $ streamIO (pure tx) st i
 
 -- | 'Ex.catch' behaves like "STM"'s 'catchSTM'.
 --

@@ -5,15 +5,12 @@
 module Sq.Connection
    ( Connection
    , connection
-   , TransactionMaker (..)
-   , transaction
    , Transaction (smode)
    , Settings (..)
    , settings
-   , readTransactionMaker'
-   , writeTransactionMaker'
+   , connectionReadTransaction
+   , connectionWriteTransaction
    , foldIO
-   , embedFoldIO
    , streamIO
    , ConnectionId (..)
    , TransactionId (..)
@@ -39,7 +36,6 @@ import Control.Monad.Trans.Class
 import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
-import Data.Coerce
 import Data.Foldable
 import Data.Function (fix)
 import Data.Functor
@@ -60,7 +56,7 @@ import Foreign.C.Types (CInt (..))
 import Foreign.Marshal.Alloc (free, malloc)
 import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr)
 import Foreign.Storable
-import GHC.IO (evaluate, unsafeUnmask)
+import GHC.IO (unsafeUnmask)
 import GHC.Records
 import GHC.Show
 import Streaming qualified as Z
@@ -72,6 +68,7 @@ import Prelude hiding (Read, log)
 import Sq.Input
 import Sq.Mode
 import Sq.Names
+import Sq.Output
 import Sq.Statement
 import Sq.Support
 
@@ -218,7 +215,7 @@ exclusiveConnection
    -> A.Acquire (Di.Df1, ExclusiveConnection c)
 exclusiveConnection smode di0 cs = do
    cId :: ConnectionId <- newConnectionId
-   let di1 = Di.attr "id" cId $ Di.push "connection" di0
+   let di1 = Di.attr "connection-mode" smode $ Di.attr "connection" cId di0
    dms :: MVar DatabaseMessage <-
       R.mkAcquire1 newEmptyMVar (fmap (const ()) . tryTakeMVar)
    abackground :: Async.Async () <-
@@ -244,7 +241,7 @@ exclusiveConnection smode di0 cs = do
   where
    background :: forall x. Di.Df1 -> IO DatabaseMessage -> IO x
    background di1 next = R.runResourceT do
-      (_, db) <- do
+      (_, db) <-
          R.allocate
             ( do
                let di2 = Di.push "connect" di1
@@ -323,12 +320,6 @@ setBusyHandler (S.Database pDB) tmaxMS = do
 
 --------------------------------------------------------------------------------
 
-newtype TransactionMaker (t :: Mode)
-   = TransactionMaker (A.Acquire (Transaction t))
-
-transaction :: TransactionMaker t -> A.Acquire (Transaction t)
-transaction = coerce
-
 -- | A database transaction handle.
 --
 -- * @t@ indicates whether 'Read'-only or read-'Write' 'Statement's are
@@ -373,12 +364,14 @@ instance NFData (Transaction t) where
 instance HasField "id" (Transaction t) TransactionId where
    getField = (._id)
 
-readTransactionMaker'
-   :: (SubMode c Read) => Connection c -> TransactionMaker 'Read
-readTransactionMaker' c = TransactionMaker do
+connectionReadTransaction
+   :: (SubMode c Read)
+   => Connection c
+   -> A.Acquire (Transaction 'Read)
+connectionReadTransaction c = do
    xc <- lockConnection c
    tId <- newTransactionId
-   let di1 = Di.attr "mode" Read $ Di.attr "id" tId $ Di.push "transaction" c.di
+   let di1 = Di.attr "transaction-mode" Read $ Di.attr "transaction" tId c.di
    R.mkAcquireType1
       ( do
          let di2 = Di.push "begin" di1
@@ -403,20 +396,18 @@ readTransactionMaker' c = TransactionMaker do
          , smode = SRead
          }
 
-writeTransactionMaker'
+connectionWriteTransaction
    :: Bool
    -- ^ Whether to finally @COMMIT@ the transaction.
    -- Otherwise, it will @ROLLBACK@.
    -> Connection 'Write
-   -> TransactionMaker 'Write
-writeTransactionMaker' commit c = TransactionMaker do
+   -> A.Acquire (Transaction 'Write)
+connectionWriteTransaction commit c = do
    xc <- lockConnection c
    tId <- newTransactionId
    let di1 =
-         Di.attr "commit" commit $
-            Di.attr "mode" Write $
-               Di.attr "id" tId $
-                  Di.push "transaction" c.di
+         Di.attr_ "transaction-mode" (if commit then "commit" else "rollback") $
+            Di.attr "transaction" tId c.di
        rollback (ye :: Maybe Ex.SomeException) = do
          let di2 = Di.push "rollback" di1
          for_ ye \e -> Di.notice di2 $ "Will rollback due to: " <> show e
@@ -466,37 +457,35 @@ acquirePreparedStatement
    -> SQL
    -> ExclusiveConnection c
    -> A.Acquire PreparedStatement
-acquirePreparedStatement di0 raw xconn = do
-   let di1 = Di.push "statement" di0
-   R.mkAcquire1
-      ( do
-         yps <- atomicModifyIORef' xconn.statements \m ->
-            swap $ Map.updateLookupWithKey (\_ _ -> Nothing) raw m
-         case yps of
-            Just ps -> do
-               reprepares <- getStatementStatusReprepare ps.handle
-               if reprepares == ps.reprepares
-                  then pure ps
-                  else do
-                     let di2 = Di.attr "id" ps.id di1
-                     Di.debug_ di2 "Reprepared"
-                     columns <- getStatementColumnIndexes ps.handle
-                     Di.debug di2 $ "Columns: " <> show (Map.toAscList columns)
-                     pure ps{reprepares, columns}
-            Nothing -> do
-               stId <- newStatementId
-               let di2 = Di.attr "id" stId di1
-               Di.debug di2 $ "Preparing " <> show raw
-               handle <- run xconn $ flip S.prepare raw.text
-               reprepares <- getStatementStatusReprepare handle
-               columns <- getStatementColumnIndexes handle
-               Di.debug di2 $ "Columns: " <> show (Map.toAscList columns)
-               pure PreparedStatement{id = stId, handle, reprepares, columns}
-      )
-      \ps -> flip Ex.onException (S.finalize ps.handle) do
-         S.reset ps.handle
-         atomicModifyIORef' xconn.statements \m ->
-            (Map.insert raw ps m, ())
+acquirePreparedStatement di0 raw xconn = R.mkAcquire1
+   ( do
+      yps <- atomicModifyIORef' xconn.statements \m ->
+         swap $ Map.updateLookupWithKey (\_ _ -> Nothing) raw m
+      case yps of
+         Just ps -> do
+            reprepares <- getStatementStatusReprepare ps.handle
+            if reprepares == ps.reprepares
+               then pure ps
+               else do
+                  let di1 = Di.attr "stmt" ps.id di0
+                  Di.debug_ di1 "Reprepared"
+                  columns <- getStatementColumnIndexes ps.handle
+                  Di.debug di1 $ "Columns: " <> show (Map.toAscList columns)
+                  pure ps{reprepares, columns}
+         Nothing -> do
+            stId <- newStatementId
+            let di1 = Di.attr "stmt" stId di0
+            Di.debug di1 $ "Preparing " <> show raw
+            handle <- run xconn $ flip S.prepare raw.text
+            reprepares <- getStatementStatusReprepare handle
+            columns <- getStatementColumnIndexes handle
+            Di.debug di1 $ "Columns: " <> show (Map.toAscList columns)
+            pure PreparedStatement{id = stId, handle, reprepares, columns}
+   )
+   \ps -> flip Ex.onException (S.finalize ps.handle) do
+      S.reset ps.handle
+      atomicModifyIORef' xconn.statements \m ->
+         (Map.insert raw ps m, ())
 
 getStatementStatusReprepare :: S.Statement -> IO Int
 getStatementStatusReprepare (S.Statement p) = do
@@ -569,32 +558,16 @@ data ErrRows
 foldIO
    :: (MonadIO m, Ex.MonadMask m, SubMode t s)
    => F.FoldM m o z
-   -> TransactionMaker t
+   -> A.Acquire (Transaction t)
    -> Statement s i o
    -> i
    -> m z
-foldIO (F.FoldM fstep finit fext) (TransactionMaker atx) st0 i = do
-   let !st1 = bindStatement st0 i
-   acc0 <- finit
-   R.withAcquire (transactionBoundPreparedStatement atx st1 ()) \ps ->
+foldIO (F.FoldM fstep finit fext) atx st i = do
+   !bs <- hushThrow $ bindStatement st i
+   !acc0 <- finit
+   R.withAcquire (atx >>= rowPopper bs) \pop ->
       flip fix acc0 \k !acc ->
-         liftIO (S.step ps.handle) >>= \case
-            S.Row -> do
-               eo <- liftIO $ runStatementOutput st1 \n ->
-                  traverse (S.column ps.handle) (Map.lookup n ps.columns)
-               either Ex.throwM (fstep acc >=> k) eo
-            S.Done -> fext acc
-
--- | Like 'foldIO', except it takes an ongoing 'Transaction' whose
--- release is managed elsewhere.
-embedFoldIO
-   :: (MonadIO m, Ex.MonadMask m, SubMode t s)
-   => F.FoldM m o z
-   -> Transaction t
-   -> Statement s i o
-   -> i
-   -> m z
-embedFoldIO f tx = foldIO f (TransactionMaker (pure tx))
+         liftIO pop >>= maybe (fext acc) (fstep acc >=> k)
 
 -- | Stream the output rows from a 'Statement' in a way that allows
 -- interleaving 'IO' actions.
@@ -635,56 +608,50 @@ streamIO
    --
    -- We use the @streaming@ library because it is fast and doesn't
    -- add any transitive dependencies to this project.
-streamIO !atx !st i = do
-   (k, typs) <- lift $ A.allocateAcquire do
-      tx <- atx
-      ps <- transactionBoundPreparedStatement (pure tx) st i
-      typs <- R.mkAcquire1 (newTMVarIO (Just ps)) \typs -> do
-         atomically $ tryTakeTMVar typs >> putTMVar typs Nothing
-      pure (typs :: TMVar (Maybe PreparedStatement))
+streamIO atx st i = do
+   bs <- liftIO $ hushThrow $ bindStatement st i
+   (k, typop) <- lift $ A.allocateAcquire do
+      pop <- rowPopper bs =<< atx
+      R.mkAcquire1 (newTMVarIO (Just pop)) \typop ->
+         atomically $ tryTakeTMVar typop >> putTMVar typop Nothing
    Z.untilLeft $ liftIO $ Ex.mask \restore ->
       Ex.bracket
          ( atomically do
-            takeTMVar typs >>= \case
-               Just ps -> pure ps
-               Nothing ->
-                  -- `m` was run before the `Z.Stream` was fully consumed.
-                  -- This is normal, we just want to throw an useful exception.
-                  Ex.throwM $ resourceVanishedWithCallStack "streamIO"
+            takeTMVar typop >>= \case
+               Just pop -> pure pop
+               Nothing -> Ex.throwM $ resourceVanishedWithCallStack "streamIO"
          )
-         (atomically . fmap (const ()) . tryPutTMVar typs . Just)
-         \ps ->
-            restore (S.step ps.handle) >>= \case
-               S.Row ->
-                  either Ex.throwM (pure . Right) =<< restore do
-                     runStatementOutput st \n ->
-                        traverse (S.column ps.handle) (Map.lookup n ps.columns)
-               S.Done ->
-                  -- The `Z.Stream` finished before `m` was run, so we release
-                  -- the transaction early.
-                  Left <$> R.releaseType k A.ReleaseEarly
+         (atomically . fmap (const ()) . tryPutTMVar typop . Just)
+         ( \pop ->
+            restore pop >>= \case
+               Just o -> pure $ Right o
+               Nothing -> Left <$> R.releaseType k A.ReleaseEarly
+         )
 
--- TODO: Using this function is awkward. Fix it.
-transactionBoundPreparedStatement
+-- | Acquires an 'IO' action that will yield the next output row each time it
+-- is called, if any. Among other 'IO' exceptions, 'ErrOutput' may be thrown.
+rowPopper
    :: (SubMode t s)
-   => A.Acquire (Transaction t)
-   -> Statement s i o
-   -> i
-   -> A.Acquire PreparedStatement
-transactionBoundPreparedStatement !atx !st !i = do
-   -- TODO: Could we safely prepare and bind a raw statement before acquiring
-   -- the transaction/connection lock? That would be more efficient.
-   binput <- liftIO $ either Ex.throwM evaluate $ runStatementInput st i
-   Transaction{conn, di = di0} <- atx
+   => BoundStatement s o
+   -> Transaction t
+   -> A.Acquire (IO (Maybe o))
+rowPopper !bs Transaction{conn, di = di0} = do
+   -- TODO: Could we safely prepare and bind a raw statement before
+   -- lockConnection? That would be more efficient.
    xconn <- lockConnection conn
    qId <- newQueryId
-   let di1 = Di.attr "id" qId $ Di.push "query" di0
-   ps <- acquirePreparedStatement di1 st.sql xconn
-   let di2 = Di.attr "id" ps.id $ Di.push "statement" di1
-       kvs = runBoundInput binput
+   let di1 = Di.attr "query" qId di0
+   ps <- acquirePreparedStatement di1 bs.sql xconn
+   let di2 = Di.attr "statement" ps.id di1
+       !kvs = Map.toAscList $ rawBoundInput bs.input
    R.mkAcquire1 (S.bindNamed ps.handle kvs) \_ -> S.clearBindings ps.handle
    Di.debug di2 $ "Bound " <> show kvs
-   pure ps
+   pure do
+      S.step ps.handle >>= \case
+         S.Row -> fmap Just do
+            hushThrow =<< flip runOutput bs.output \n ->
+               traverse (S.column ps.handle) (Map.lookup n ps.columns)
+         S.Done -> pure Nothing
 
 --------------------------------------------------------------------------------
 

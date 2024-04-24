@@ -8,12 +8,12 @@ module Sq.Input
    , BoundInput
    , bindInput
    , ErrInput (..)
-   , runBoundInput
+   , rawBoundInput
    ) where
 
 import Control.DeepSeq
 import Control.Exception.Safe qualified as Ex
-import Control.Monad
+import Data.Bifunctor
 import Data.Coerce
 import Data.Functor.Contravariant
 import Data.Functor.Contravariant.Divisible
@@ -150,22 +150,21 @@ instance (EncodeDefault i) => IsString (Input i) where
 
 --------------------------------------------------------------------------------
 
-newtype BoundInput = BoundInput [(T.Text, S.SQLData)]
+newtype BoundInput = BoundInput (Map.Map T.Text S.SQLData)
    deriving newtype (Eq, Show)
 
 bindInput :: Input i -> i -> Either ErrInput BoundInput
-bindInput ii i = fmap BoundInput do
-   forM (Map.toAscList (runInput ii i)) \(bn, ev) -> do
-      let !k = renderInputBindingName bn
-      case ev of
-         Right !d -> Right (k, d)
-         Left e -> Left $ ErrInput bn e
+bindInput ii i = do
+   !m <-
+      Map.mapKeysMonotonic renderInputBindingName
+         <$> Map.traverseWithKey (first . ErrInput) (runInput ii i)
+   pure $ BoundInput m
 
 -- | See v'Encode'.
 data ErrInput = ErrInput BindingName ErrEncode
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
-runBoundInput :: BoundInput -> [(T.Text, S.SQLData)]
-runBoundInput = coerce
-{-# INLINE runBoundInput #-}
+rawBoundInput :: BoundInput -> Map.Map T.Text S.SQLData
+rawBoundInput = coerce
+{-# INLINE rawBoundInput #-}

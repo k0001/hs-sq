@@ -44,11 +44,17 @@ fromSMode :: SMode mode -> Mode
 fromSMode = \case
    SRead -> Read
    SWrite -> Write
+{-# INLINE fromSMode #-}
 
 instance Di.ToValue Mode where
    value = \case
       Read -> "read"
       Write -> "write"
+   {-# INLINE value #-}
+
+instance Di.ToValue (SMode mode) where
+   value = Di.value . fromSMode
+   {-# INLINE value #-}
 
 --------------------------------------------------------------------------------
 

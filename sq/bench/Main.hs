@@ -106,7 +106,7 @@ withTempPool di k =
 
 main :: IO ()
 main = Di.new \di0 -> do
-   let di1 = Di.Core.filter (\l _ _ -> l >= Df1.Info) di0
+   let di1 = const di0 $ Di.Core.filter (\l _ _ -> l >= Df1.Info) di0
    defaultMain
       [ bgroup
          "sq"

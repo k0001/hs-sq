@@ -7,15 +7,13 @@ module Sq
    , readStatement
    , writeStatement
    , bindStatement
-
-    -- ** SQL
    , SQL
    , sql
 
     -- ** Input
    , Input
-   , encode
    , input
+   , encode
 
     -- *** Encode
    , Encode (..)
@@ -29,8 +27,8 @@ module Sq
 
     -- ** Output
    , Output
-   , decode
    , output
+   , decode
 
     -- *** Decode
    , Decode (..)
@@ -48,14 +46,13 @@ module Sq
 
     -- * Transactional
    , Transactional
-   , Retry(..)
    , read
    , commit
    , rollback
    , embed
    , Ref
 
-    -- * Executing
+    -- ** Querying
    , one
    , maybe
    , zero
@@ -65,16 +62,15 @@ module Sq
    , foldM
    , stream
 
-    -- ** IO
-   , foldIO
-   , embedFoldIO
+    -- * Streaming
    , streamIO
+   , foldIO
 
     -- * Transaction
    , Transaction
-   , readTransactionMaker
-   , commitTransactionMaker
-   , rollbackTransactionMaker
+   , readTransaction
+   , commitTransaction
+   , rollbackTransaction
 
     -- * Pool
    , Pool
@@ -93,6 +89,13 @@ module Sq
    , with
    , uith
 
+    -- * Miscellaneuos
+   , Retry (..)
+   , BindingName
+   , Mode (..)
+   , SubMode
+   , Null (..)
+
     -- * Errors
    , ErrEncode (..)
    , ErrInput (..)
@@ -101,11 +104,7 @@ module Sq
    , ErrStatement (..)
    , ErrRows (..)
 
-    -- * Miscellaneuos
-   , BindingName
-   , Mode (..)
-   , SubMode
-   , Null (..)
+    -- * Re-exports
    , S.SQLData (..)
    , S.SQLVFS (..)
    )
@@ -234,17 +233,14 @@ uith = A.with
 tempPool :: Di.Df1 -> A.Acquire (Pool Write)
 tempPool di0 = do
    d <- acquireTmpDir
-   let di1 = Di.attr "mode" Write $ Di.push "pool" di0
-   pool SWrite di1 $ settings (d </> "db.sqlite")
+   pool SWrite (Di.push "sq" di0) $ settings (d </> "db.sqlite")
 
 -- | Acquire a read-'Write' 'Pool' according to the given 'Settings'.
 --
 -- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
 -- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
 writePool :: Di.Df1 -> Settings -> A.Acquire (Pool Write)
-writePool di0 s = do
-   let di1 = Di.attr "mode" Write $ Di.push "pool" di0
-   pool SWrite di1 s
+writePool di0 = pool SWrite (Di.push "sq" di0)
 {-# INLINE writePool #-}
 
 -- | Acquire a 'Read'-only 'Pool' according to the given 'Settings'.
@@ -252,41 +248,8 @@ writePool di0 s = do
 -- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
 -- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
 readPool :: Di.Df1 -> Settings -> A.Acquire (Pool Read)
-readPool di0 s = do
-   let di1 = Di.attr "mode" Read $ Di.push "pool" di0
-   pool SRead di1 s
+readPool di0 = pool SRead (Di.push "sq" di0)
 {-# INLINE readPool #-}
-
---------------------------------------------------------------------------------
-
--- | Construct a 'Read'-only 'Statement'.
---
--- __WARNING__: This library doesn't __yet__ provide a safe way to construct
--- 'Statement's. Be responsible.
---
--- * The 'SQL' must be read-only.
---
--- * The 'SQL' must contain a single statement.
---
--- * The 'SQL' must not contain any transaction nor savepoint management
--- statements.
-readStatement :: Input i -> Output o -> SQL -> Statement Read i o
-readStatement = statement
-{-# INLINE readStatement #-}
-
--- | Construct a 'Statement' that can only be executed as part of a 'Write'
--- 'Transaction'.
---
--- __WARNING__: This library doesn't __yet__ provide a safe way to construct
--- 'Statement's. Be responsible.
---
--- * The 'SQL' must contain a single statement.
---
--- * The 'SQL' must not contain any transaction nor savepoint management
--- statements.
-writeStatement :: Input i -> Output o -> SQL -> Statement Write i o
-writeStatement = statement
-{-# INLINE writeStatement #-}
 
 --------------------------------------------------------------------------------
 
@@ -325,14 +288,22 @@ some = foldM $ foldNonEmptyM ErrRows_TooFew
 
 -- | Executes a 'Statement' expected to return an arbitrary
 -- number of rows.  Returns the length of the list, too.
-list :: (SubMode t s) => Statement s i o -> i -> Transactional g r t (Int64, [o])
+list
+   :: (SubMode t s)
+   => Statement s i o
+   -> i
+   -> Transactional g r t (Int64, [o])
 list = fold foldList
 {-# INLINE list #-}
 
 -- | Executes a 'Statement' and folds the rows purely in a
 -- streaming fashion.
 fold
-   :: (SubMode t s) => F.Fold o z -> Statement s i o -> i -> Transactional g r t z
+   :: (SubMode t s)
+   => F.Fold o z
+   -> Statement s i o
+   -> i
+   -> Transactional g r t z
 fold = foldM . F.generalize
 {-# INLINE fold #-}
 
@@ -347,7 +318,7 @@ read
    => Pool p
    -> (forall g. Transactional g r 'Read a)
    -> m a
-read p = transactionalRetry $ readTransactionMaker p
+read p = transactionalRetry $ readTransaction p
 {-# INLINE read #-}
 
 -- | Execute a read-'Write' 'Transactional' in a fresh 'Transaction' that will
@@ -355,8 +326,11 @@ read p = transactionalRetry $ readTransactionMaker p
 --
 -- @'commit' t  =  'transactional' ('commitTransaction' p)@
 commit
-   :: (MonadIO m) => Pool 'Write -> (forall g. Transactional g r 'Write a) -> m a
-commit p = transactionalRetry $ commitTransactionMaker p
+   :: (MonadIO m)
+   => Pool 'Write
+   -> (forall g. Transactional g r 'Write a)
+   -> m a
+commit p = transactionalRetry $ commitTransaction p
 {-# INLINE commit #-}
 
 -- | Execute a read-'Write' 'Transactional' in a fresh 'Transaction' that will
@@ -366,6 +340,9 @@ commit p = transactionalRetry $ commitTransactionMaker p
 --
 -- @'rollback' t  =  'transactional' ('rollbackTransaction' p)@
 rollback
-   :: (MonadIO m) => Pool 'Write -> (forall g. Transactional g r 'Write a) -> m a
-rollback p = transactionalRetry $ rollbackTransactionMaker p
+   :: (MonadIO m)
+   => Pool 'Write
+   -> (forall g. Transactional g r 'Write a)
+   -> m a
+rollback p = transactionalRetry $ rollbackTransaction p
 {-# INLINE rollback #-}

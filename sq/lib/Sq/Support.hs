@@ -1,6 +1,7 @@
 module Sq.Support
    ( resourceVanishedWithCallStack
    , note
+   , hushThrow
    , show'
    , newUnique
    , acquireTmpDir
@@ -45,9 +46,15 @@ resourceVanishedWithCallStack s =
 
 note :: a -> Maybe b -> Either a b
 note a = maybe (Left a) Right
+{-# INLINE note #-}
+
+hushThrow :: (Ex.Exception e, Ex.MonadThrow m) => Either e b -> m b
+hushThrow = either Ex.throwM pure
+{-# INLINE hushThrow #-}
 
 show' :: forall b a. (IsString b, Show a) => a -> b
 show' = fromString . show
+{-# INLINE show' #-}
 
 --------------------------------------------------------------------------------
 
@@ -135,4 +142,3 @@ foldOneM
    -- ^ More than one.
    -> F.FoldM m o o
 foldOneM e0 eN = foldPostmapM (maybe (Ex.throwM e0) pure) (foldMaybeM eN)
-
