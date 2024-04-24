@@ -71,12 +71,14 @@ newtype ErrEncode = ErrEncode Ex.SomeException
 
 --------------------------------------------------------------------------------
 
--- | Default way to encode a Haskell value of type @a@ into a SQLite value.
+-- | Default way to encode a Haskell value of type @a@ into a single
+-- SQLite column value.
 --
 -- If there there exist also a 'Sq.DecodeDefault' instance for @a@, then it
 -- must roundtrip with the 'Sq.EncodeDefault' instance for @a@.
 class EncodeDefault a where
-   -- | Default way to encode a Haskell value of type @a@ into a SQLite value.
+   -- | Default way to encode a Haskell value of type @a@ into a single
+   -- SQLite column value.
    encodeDefault :: (HasCallStack) => Encode a
 
 -- | A convenience function for refining an 'Encode'r through a function that
@@ -139,6 +141,7 @@ instance EncodeDefault Null where
 --------------------------------------------------------------------------------
 -- Extra encodes
 
+-- | This is 'absurd'.
 instance EncodeDefault Void where
    encodeDefault = Encode absurd
 
@@ -169,50 +172,62 @@ instance EncodeDefault Bool where
    encodeDefault = bool 0 1 >$< encodeDefault @Int64
    {-# INLINE encodeDefault #-}
 
+-- | 'S.FloatColumn'.
 instance EncodeDefault Float where
    encodeDefault = float2Double >$< encodeDefault
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn'.
 instance EncodeDefault Int8 where
    encodeDefault = fromIntegral >$< encodeDefault @Int64
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn'.
 instance EncodeDefault Word8 where
    encodeDefault = fromIntegral >$< encodeDefault @Int64
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn'.
 instance EncodeDefault Int16 where
    encodeDefault = fromIntegral >$< encodeDefault @Int64
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn'.
 instance EncodeDefault Word16 where
    encodeDefault = fromIntegral >$< encodeDefault @Int64
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn'.
 instance EncodeDefault Int32 where
    encodeDefault = fromIntegral >$< encodeDefault @Int64
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn'.
 instance EncodeDefault Word32 where
    encodeDefault = fromIntegral >$< encodeDefault @Int64
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn'.
 instance EncodeDefault Int where
    encodeDefault = fromIntegral >$< encodeDefault @Int64
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance EncodeDefault Word where
    encodeDefault = encodeSizedIntegral
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance EncodeDefault Word64 where
    encodeDefault = encodeSizedIntegral
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance EncodeDefault Integer where
    encodeDefault = encodeSizedIntegral
    {-# INLINE encodeDefault #-}
 
+-- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance EncodeDefault Natural where
    encodeDefault = encodeSizedIntegral
    {-# INLINE encodeDefault #-}
@@ -224,18 +239,22 @@ encodeSizedIntegral = Encode \a ->
       Just i -> unEncode (encodeDefault @Int64) i
       Nothing -> unEncode (encodeDefault @String) (show (toInteger a))
 
+-- | 'S.TextColumn'.
 instance EncodeDefault TL.Text where
    encodeDefault = TL.toStrict >$< encodeDefault
    {-# INLINE encodeDefault #-}
 
+-- | 'S.TextColumn'.
 instance EncodeDefault TB.Builder where
    encodeDefault = TB.toLazyText >$< encodeDefault
    {-# INLINE encodeDefault #-}
 
+-- | 'S.TextColumn'.
 instance EncodeDefault Char where
    encodeDefault = pure >$< encodeDefault @String
    {-# INLINE encodeDefault #-}
 
+-- | 'S.TextColumn'.
 instance EncodeDefault String where
    encodeDefault = Encode \xc ->
       case List.find invalid xc of
@@ -247,40 +266,112 @@ instance EncodeDefault String where
       invalid :: Char -> Bool
       invalid = \c -> '\55296' <= c && c <= '\57343'
 
+-- | 'S.BlobColumn'.
 instance EncodeDefault BL.ByteString where
    encodeDefault = BL.toStrict >$< encodeDefault
    {-# INLINE encodeDefault #-}
 
+-- | 'S.BlobColumn'.
 instance EncodeDefault BS.ShortByteString where
    encodeDefault = BS.fromShort >$< encodeDefault
    {-# INLINE encodeDefault #-}
 
+-- | 'S.BlobColumn'.
 instance EncodeDefault BB.Builder where
    encodeDefault = BB.toLazyByteString >$< encodeDefault
    {-# INLINE encodeDefault #-}
 
--- | ISO-8601 in a @'S.TextColumn'.
+-- | 'Time.ISO8601' in a @'S.TextColumn'.
 --
 -- @yyyy-mm-ddThh:mm:ss/[.ssssssssssss]/+00:00@
 --
--- * Sorting these lexicographically corresponds to sorting them by time.
+-- * Sorting these lexicographically in SQL corresponds to sorting them by time.
 --
 -- * __WARNING__: SQLite date and time functions support resolution only up to
--- millisenconds.
+-- milliseconds.
 --
 -- * __WARNING__: SQLite date and time functions don't support leap seconds.
 instance EncodeDefault Time.UTCTime where
-   encodeDefault =
-      contramap
-         (Time.iso8601Show . Time.utcToZonedTime Time.utc)
-         encodeDefault
+   encodeDefault = Time.utcToZonedTime Time.utc >$< encodeDefault
+
+-- | 'Time.ISO8601' in a @'S.TextColumn'.
+--
+-- @yyyy-mm-ddThh:mm:ss/[.ssssssssssss]/±hh:mm@
+--
+-- * __WARNING__: Sorting these lexicographically in SQL won't work unless the
+-- offset is always the same! Convert to 'Time.UTCTime' first.
+--
+-- * __WARNING__: SQLite date and time functions support resolution only up to
+-- milliseconds.
+--
+-- * __WARNING__: SQLite date and time functions don't support leap seconds.
+instance EncodeDefault Time.ZonedTime where
+   encodeDefault = Time.iso8601Show >$< encodeDefault
+
+-- | 'Time.ISO8601' in a @'S.TextColumn'.
+--
+-- @yyyy-mm-ddThh:mm:ss/[.ssssssssssss]/@
+--
+-- * Sorting these lexicographically in SQL corresponds to sorting them by time.
+--
+-- * __WARNING__: SQLite date and time functions support resolution only up to
+-- milliseconds.
+--
+-- * __WARNING__: SQLite date and time functions don't support leap seconds.
+instance EncodeDefault Time.LocalTime where
+   encodeDefault = Time.iso8601Show >$< encodeDefault
+
+-- | ISO-8601 in a @'S.TextColumn'.
+--
+-- @yyyy-mm-dd@
+--
+-- * Sorting these lexicographically in SQL corresponds to sorting them by time.
+instance EncodeDefault Time.Day where
+   encodeDefault = Time.iso8601Show >$< encodeDefault
+
+-- | 'Time.ISO8601' in a @'S.TextColumn'.
+--
+-- @hh:mm:ss/[.ssssssssssss]/@
+--
+-- * Sorting these lexicographically in SQL corresponds to sorting them by time.
+--
+-- * __WARNING__: SQLite date and time functions support resolution only up to
+-- milliseconds.
+--
+-- * __WARNING__: SQLite date and time functions don't support leap seconds.
+instance EncodeDefault Time.TimeOfDay where
+   encodeDefault = Time.iso8601Show >$< encodeDefault
+
+-- | 'Time.ISO8601' in a @'S.TextColumn'.
+--
+-- @PyYmMdD@
+instance EncodeDefault Time.CalendarDiffDays where
+   encodeDefault = Time.iso8601Show >$< encodeDefault
+
+-- | 'Time.ISO8601' in a @'S.TextColumn'.
+--
+-- @PyYmMdDThHmMs/[.ssssssssssss]/S@
+--
+-- * __WARNING__: SQLite date and time functions support resolution only up to
+-- milliseconds.
+instance EncodeDefault Time.CalendarDiffTime where
+   encodeDefault = Time.iso8601Show >$< encodeDefault
+
+-- | 'Time.ISO8601' in a @'S.TextColumn'.
+--
+-- @±hh:mm@
+instance EncodeDefault Time.TimeZone where
+   encodeDefault = Time.iso8601Show >$< encodeDefault
+
 
 --------------------------------------------------------------------------------
 
+-- | 'S.BlobColumn'.
 encodeBinary :: (a -> Bin.Put) -> Encode a
 encodeBinary f = contramap (Bin.runPut . f) (encodeDefault @BL.ByteString)
 {-# INLINE encodeBinary #-}
 
+-- | 'S.TextColumn'.
 encodeShow :: (Show a) => Encode a
 encodeShow = show >$< (encodeDefault @String)
 {-# INLINE encodeShow #-}

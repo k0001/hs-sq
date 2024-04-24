@@ -24,6 +24,10 @@ import GHC.Records
 
 --------------------------------------------------------------------------------
 
+-- | Part of a binding name suitable to use with 'Sq.encode', 'Sq.decode',
+-- 'Sq.input' and 'Sq.output'.
+--
+-- Construct with 'name' or 'IsString'.
 newtype Name = Name T.Text
    deriving newtype (Eq, Ord, Show, NFData)
 

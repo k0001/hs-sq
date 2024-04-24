@@ -27,13 +27,13 @@ import Sq.Names
 
 --------------------------------------------------------------------------------
 
--- | Encodes all the input to a single 'Statement'.
+-- | How to encode all the input to a single 'Sq.Statement'.
 --
--- * Construct with ''encode', 'IsString'.
+-- * Construct with 'encode', 'IsString'.
 --
 -- * Nest with 'input'.
 --
--- * Compose with 'Decidable' and 'Monoid' tools.
+-- * Compose with 'Contravariant', 'Divisible', 'Decidable' and 'Monoid' tools.
 newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncode S.SQLData))
    deriving newtype
       ( Semigroup
@@ -53,8 +53,8 @@ runInput :: Input i -> i -> Map.Map BindingName (Either ErrEncode S.SQLData)
 runInput = coerce
 {-# INLINE runInput #-}
 
--- | Encode a single input parameter. The 'Name' will be reachable from the 'SQL'
--- query with a @$@ prefix.
+-- | Encode a single input parameter. The value will be reachable from the 'SQL'
+-- query through the specified 'Name', with a @$@ prefix.
 --
 -- @
 -- 'Sq.writeStatement'
@@ -65,7 +65,11 @@ runInput = coerce
 --    => 'Sq.Statement' 'Sq.Write' x ()
 -- @
 --
--- Multiple 'Input's can be composed with 'Decidable' and 'Monoid' tools.
+-- Note that by design, this library doesn't support positional 'Input'
+-- parameters. You must always pick a 'Name'.
+--
+-- Multiple 'Input's can be composed with 'Contravariant', 'Divisible', 'Decidable'
+-- and 'Monoid' tools.
 --
 -- @
 -- 'Sq.writeStatement'
@@ -77,8 +81,8 @@ runInput = coerce
 --    => 'Sq.Statement' 'Sq.Write' (x, y) ()
 -- @
 --
--- Pro-tip: Consider using the 'IsString' instance for 'Input',
--- where for example @\"foo\"@ means @'encode' \"foo\" 'encodeDefault'@.
+-- Pro-tip: Consider using the 'IsString' instance for 'Input'.
+-- For example, @\"foo\"@ means @'encode' \"foo\" 'encodeDefault'@.
 -- That is, the last example could be written as follows:
 --
 -- @
@@ -132,17 +136,6 @@ input n ba = Input \s ->
 --         \"INSERT INTO t (x) VALUES ($a)\"
 --    :: ('EncodeDefault' a)
 --    => 'Sq.Statement' 'Sq.Write' a ()
--- @
---
--- Multiple 'Input's can be composed with 'Decidable' and 'Monoid' tools.
---
--- @
--- 'Sq.writeStatement'
---         ('divided' \"a\" \"b\")
---         'mempty'
---         \"INSERT INTO t (x, y) VALUES ($a, $b)\"
---    :: ('EncodeDefault' a, 'EncodeDefault' b)
---    => 'Sq.Statement' 'Sq.Write' (a, b) ()
 -- @
 instance (EncodeDefault i) => IsString (Input i) where
    fromString s = encode (fromString s) encodeDefault

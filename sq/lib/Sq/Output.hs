@@ -20,6 +20,14 @@ import Sq.Names
 
 --------------------------------------------------------------------------------
 
+-- | How to decode an output row from a single 'Sq.Statement'.
+--
+-- * Construct with 'decode', 'IsString'.
+--
+-- * Nest with 'output'.
+--
+-- * Compose with 'Monoid', 'Functor', 'Applicative', 'Alternative', 'Monad',
+-- 'MonadPlus', 'MonadFail' and 'Ex.MonadThrow' tools.
 data Output o
    = Output_Pure o
    | Output_Fail Ex.SomeException
@@ -35,16 +43,94 @@ data ErrOutput
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
+-- | Decode the column with the given 'Name'.
+--
+-- @
+-- 'Sq.readStatement'
+--         'mempty'
+--         ('decode' \"foo\" 'decodeDefault')
+--         \"SELECT foo FROM t\"
+--    :: ('DecodeDefault' x)
+--    => 'Sq.Statement' 'Sq.Read' () x
+-- @
+--
+-- Note that by design, this library doesn't support positional 'Output'
+-- parameters. You must always pick a 'Name'. In the raw SQL, you can use @AS@
+-- to rename your output columns as necessary.
+--
+-- @
+-- 'Sq.readStatement'
+--         'mempty'
+--         ('decode' \"abc\" 'decodeDefault')
+--         \"SELECT foo AS abc FROM t\"
+--    :: ('DecodeDefault' x)
+--    => 'Sq.Statement' 'Sq.Read' () x
+-- @
+--
+-- Multiple 'Outputs's can be composed with 'Monoid', 'Functor', 'Applicative',
+-- 'Alternative', 'Monad', 'MonadPlus', 'MonadFail' and 'Ex.MonadThrow' tools.
+--
+-- @
+-- 'Sq.readStatement'
+--         'mempty'
+--         (do foo <- 'decode' \"foo\" 'decodeDefault'
+--             'when' (foo > 10) do
+--                'fail' \"Oh no!"
+--             bar <- 'decode' \"bar\" 'decodeDefault'
+--             'pure' (foo, bar))
+--         \"SELECT foo, bar FROM t\"
+--    :: ('DecodeDefault' y)
+--    => 'Sq.Statement' 'Sq.Read' () ('Int', y)
+-- @
+--
+-- Pro-tip: Consider using the 'IsString' instance for 'Output',
+-- where for example @\"foo\"@ means @'decode' \"foo\" 'decodeDefault'@:
+--
+-- @
+-- 'Sq.readStatement'
+--         ('liftA2' (,) \"foo\" \"bar\")
+--         'mempty'
+--         \"SELECT foo, bar FROM t\"
+--    :: ('DecodeDefault' x, 'DecodeDefault' y)
+--    => 'Sq.Statement' 'Sq.Read' () (x, y)
+-- @
 decode :: Name -> Decode o -> Output o
 decode n vda = Output_Decode (bindingName n) (Output_Pure <$> vda)
 {-# INLINE decode #-}
 
+-- | Add a prefix 'Name' to column names in the given 'Output',
+-- separated by @\__@
+--
+-- This is useful for making reusable 'Output's. For example,
+-- consider the following.
+--
+-- @
+-- data Point = Point { x :: 'Int', y :: 'Int' }
+--
+-- pointOutput :: 'Output' Point
+-- pointOutput = Point '<$>' \"x\" '<*>' \"y\"
+-- @
+--
+-- After using 'output':
+--
+-- @
+-- 'Sq.readStatement'
+--         'mempty'
+--         ('liftA2' ('output' \"p1\" pointInput)
+--                 ('output' \"p2\" pointInput))
+--         ['Sq.sql'|
+--           SELECT ax AS p1\__x, ay AS p1\__y,
+--                  bx AS p2\__x, by AS p2\__y
+--           FROM vectors|]
+--    :: 'Sq.Statement' 'Sq.Read' () (Point, Point)
+-- @
 output :: Name -> Output o -> Output o
 output n = \case
    Output_Decode bn d ->
       Output_Decode (bindingName n <> bn) (output n <$> d)
    o -> o
 
+-- | TODO cache names after lookup. Important for Alternative.
 runOutput
    :: (Monad m)
    => (BindingName -> m (Maybe S.SQLData))
@@ -70,11 +156,27 @@ instance Applicative Output where
    liftA2 = liftM2
    {-# INLINE liftA2 #-}
 
+instance Alternative Output where
+   empty = fail "empty"
+   {-# INLINE empty #-}
+   l <|> r = case l of
+      Output_Decode n vda ->
+         Output_Decode n (fmap (<|> r) vda)
+      Output_Pure _ -> l
+      Output_Fail _ -> r
+
+instance MonadPlus Output where
+   mzero = fail "mzero"
+   {-# INLINE mzero #-}
+   mplus = (<|>)
+   {-# INLINE mplus #-}
+
 instance Monad Output where
-   Output_Decode n vda >>= k =
-      Output_Decode n (fmap (>>= k) vda)
-   Output_Pure a >>= k = k a
-   Output_Fail e >>= _ = Output_Fail e
+   l >>= k = case l of
+      Output_Decode n vda ->
+         Output_Decode n (fmap (>>= k) vda)
+      Output_Pure a -> k a
+      Output_Fail e -> Output_Fail e
 
 instance Ex.MonadThrow Output where
    throwM = Output_Fail . Ex.toException

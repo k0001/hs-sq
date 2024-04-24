@@ -13,8 +13,8 @@ module Sq
 
     -- ** Input
    , Input
-   , input
    , encode
+   , input
 
     -- *** Encode
    , Encode (..)
@@ -29,8 +29,8 @@ module Sq
 
     -- ** Output
    , Output
-   , output
    , decode
+   , output
 
     -- *** Decode
    , Decode (..)

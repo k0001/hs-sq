@@ -70,19 +70,87 @@ acquireEnv tx = do
                writeTVar tv Nothing
    pure Env{..}
 
--- | @'Transactional' g t a@ groups together multiple interactions with a same
--- @'Transaction' t@ that finally produce a value of type @a@.
+-- | @'Transactional' g r t a@ groups together multiple interactions with a same
+-- @'Transaction' t@ that finally produce a value of type @a@. Think of
+-- 'Transactional' as if it was 'STM'.
 --
--- @g@ is a unique tag for the whole inteaction group that prevents actions
--- from escaping its intended scope (like 'Data.STRef.ST' does it).
--- Particularly, we don't want 'Ref's nor 'stream's to escape.
+-- * @g@ is an ephemeral tag for the whole inteaction group that prevents
+-- 'Ref's and 'stream's from escaping its intended scope (like 'Data.STRef.ST'
+-- does it). Just ignore it, it will always be polymorphic.
 --
--- Run an 'Transactional' with 'transactional'. Example:
+-- * @r@ says whether the 'Transactional' could potentially be retried from
+-- scratch in order to observe a new snapshot of the database (like 'STM' does
+-- it).  Learn more about this in 'Retry'.
+--
+-- * @t@ says whether the 'Transactional' could potentially perform 'Write'
+-- or 'Read'-only operations.
+--
+-- * @a@ is the Haskell value finally produced by a successfu execution of
+-- the 'Transactional'.
+--
+-- __To execute a 'Transactional'__ you will normally use one of 'Sq.read' or
+-- 'Sq.commit' (or 'Sq.rollback' or 'Sq.embed', but those are less common).
 --
 -- @
--- "Sq".'transactional' pool.write do
---    x <- "Sq".'one' myStatement 123
---    "Sq".'list' anotherStatement x
+-- /-- We are using 'Sq.commit' to execute the 'Transactional'. This means/
+-- /-- that the transactional will have read and 'Write' capabilities, that/
+-- /-- the transaction can 'Retry', and that ultimately, unless there are/
+-- /-- unhandled exceptions, the changes will be commited to the database./
+-- __"Sq".'Sq.commit' pool do__
+--
+--    /-- We can execute 'Write' 'Statement's:/
+--    __userId1 <- "Sq".'Sq.one' /insertUser/ \"haskell\@example.com\"__
+--
+--    /-- And 'Read' 'Statement's:/
+--    __userId2 <- "Sq".'Sq.one' /getUserByEmail/ \"haskell\@example.com\"__
+--
+--    /-- We have 'MonadFail' too:/
+--    __'when' (userId1 /= userId2) do__
+--        __'fail' \"Something unexpected happened!\"__
+--
+--    /-- We also have 'Ref's, which work just like 'TVar's:/
+--    __ref <- 'newRef' (0 :: 'Int')__
+--
+--    /-- 'Ex.catch' behaves like 'catchSTM', undoing changes to 'Ref's/
+--    /-- and to the database itself when the original action fails:/
+--    __userId3 <- 'Ex.catch'__
+--        /-- Something will fail .../
+--        __(do 'modifyRef' ref (+ 1)__
+--            __\_ <- "Sq".'Sq.one' /insertUser/ \"sqlite\@example.com\"__
+--            __'Ex.throwM' FakeException123)__
+--        /-- ... but there is a catch!/
+--        __(\\FakeException123 -> do__
+--            /-- The observable universe has been reset to what it/
+--            /-- was before the 'Ex.catch':/
+--            __"Sq".'Sq.zero' /getUserByEmail/ \"sqlite\@example.com\"__
+--            __'modifyRef' ref (+ 10))__
+--
+--    /-- Only the effects from the exception handling function were preserved:/
+--    __10 <- 'readRef' ref__
+--    __"Sq".'Sq.zero' /getUserByEmail/ \"sqlite\@example.com\"__
+--
+--    /-- 'mzero' and 'empty' not only discard changes as 'Ex.catch' does, but/
+--    /-- they also cause the ongoing 'Transaction' to be discarded, and the/
+--    /-- entire 'Transactional' to be executed again on a brand new/
+--    /-- 'Transaction' observing a new snapshot of the database. For example, /
+--    /-- the following code will keep retrying the whole 'Transactional' until/
+--    /-- the user with the specified email exists./
+--    __"Sq".'maybe' /getUserByEmail/ \"nix@example.com\" >>= \\case__
+--        __'Just' userId3 -> 'pure' userId3__
+--        __'Nothing' -> 'mzero'__
+--
+--    /-- Presumably, this example was waiting for a concurrent connection to/
+--    /-- insertsaid user. If we got here, it is because that happened./
+--
+--    /-- As usual, 'mzero' and 'empty' can be handled by means of '<|>' and 'mplus'/
+--    __'False' \<- 'mplus' ('writeRef' ref 8 >> 'mzero' >> 'pure' 'True')__
+--                   __('pure' 'False')__
+--
+--    /-- The recent 'writeRef' to 8 on the 'mzero'ed 'Transactional' was discarded:/
+--    __10 <- 'readRef' ref__
+--
+--    /-- That's all! Questions to <https:\/\/github.com\/k0001\/hs-sq\/issues>/
+--    __'pure' ()__
 -- @
 newtype Transactional (g :: k) (r :: Retry) (t :: Mode) (a :: Type)
    = Transactional (Env g r t -> R.ResourceT IO a)
@@ -92,6 +160,7 @@ newtype Transactional (g :: k) (r :: Retry) (t :: Mode) (a :: Type)
       , Monad
       , Ex.MonadThrow
       , Ex.MonadMask
+      , MonadFail
       )
       via (ReaderT (Env g r t) (R.ResourceT IO))
 
