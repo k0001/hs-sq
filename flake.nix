@@ -48,11 +48,17 @@
         };
         packages = {
           sq__ghc98 = pkgs.haskell.packages.ghc98.sq;
+          sq__ghc98__sdist =
+            pkgs.haskell.packages.ghc98.cabalSdist { src = ./sq; };
+          sq__ghc98__sdistDoc =
+            pkgs.haskell.lib.documentationTarball config.packages.sq__ghc98;
           default = pkgs.releaseTools.aggregate {
             name = "every output from this flake";
             constituents = [
               config.packages.sq__ghc98
               config.packages.sq__ghc98.doc
+              config.packages.sq__ghc98__sdist
+              config.packages.sq__ghc98__sdistDoc
               config.devShells.ghc98
             ];
           };
