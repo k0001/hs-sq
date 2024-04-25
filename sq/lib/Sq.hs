@@ -3,7 +3,8 @@
 
 -- | High-level SQLite client library
 --
--- __This is an early release of this library. Use at your own risk and responsibility.__
+-- ⚠️  __This is an early preview release of this library. Use at your own risk.__
+--
 --
 -- @
 -- import qualified "Sq"
@@ -45,6 +46,8 @@
 --
 -- If you have questions or suggestions, just say so at
 -- <https://github.com/k0001/hs-sq/issues>.
+--
+-- ⚠️  __This is an early preview release of this library. Use at your own risk.__
 module Sq
    ( -- * Statement
     Statement

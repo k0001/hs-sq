@@ -92,9 +92,9 @@ acquireEnv tx = do
 --
 -- @
 -- /-- We are using 'Sq.commit' to execute the 'Transactional'. This means/
--- /-- that the transactional will have read and 'Write' capabilities, that/
--- /-- the transaction can 'Retry', and that ultimately, unless there are/
--- /-- unhandled exceptions, the changes will be commited to the database./
+-- /-- that the 'Transactional' will have read and 'Write' capabilities, that/
+-- /-- it can 'retry', and that ultimately, unless there are unhandled/
+-- /-- exceptions, the changes will be commited to the database./
 -- __"Sq".'Sq.commit' pool do__
 --
 --    /-- We can execute 'Write' 'Statement's:/
@@ -130,10 +130,10 @@ acquireEnv tx = do
 --
 --    /-- 'retry' and its synonyms 'mzero' and 'empty' not only discard changes as/
 --    /-- 'Ex.catch' does, but they also cause the ongoing 'Transaction' to be/
---    /-- discarded, and the /-- entire 'Transactional' to be executed again on a/
+--    /-- discarded, and the entire 'Transactional' to be executed again on a/
 --    /-- brand new 'Transaction' observing a new snapshot of the database. For/
 --    /-- example, the following code will keep retrying the whole 'Transactional'/
---    /--  until the user with the specified email exists./
+--    /-- until the user with the specified email exists./
 --    __userId4 \<- "Sq".'maybe' /getUserIdByEmail/ \"nix@example.com\" >>= \\case__
 --        __'Just' x -> 'pure' x__
 --        __'Nothing' -> 'retry'__
