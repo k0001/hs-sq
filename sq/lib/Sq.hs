@@ -1,6 +1,50 @@
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE NoFieldSelectors #-}
 
+-- | High-level SQLite client library
+--
+-- __This is an early release of this library. Use at your own risk and responsibility.__
+--
+-- @
+-- import qualified "Sq"
+-- @
+--
+-- Things currently supported:
+--
+-- * Type-safe __encoding__ of SQL query parameters and columns ('Encode',
+-- 'Input').
+--
+-- * Type-safe __decoding__ of SQL output rows and columns ('Decode', 'Output').
+--
+-- * Type-safe __concurrent connections__ with read and write database access
+-- ('Pool').
+--
+-- * Type-safe __'Control.Concurrent.STM'-like transactional__ interactions
+-- with the database, including 'Control.Concurrent.STM.retry'-like,
+-- 'Control.Concurrent.STM.TVar'-like, and
+-- 'Control.Concurrent.STM.catchSTM'-like tools ('Transactional', 'retry',
+-- 'Ref').
+--
+-- * Type-safe __distinction between 'Read'-only and read-'Write'__ things.
+--
+-- * Type-safe __streaming and interleaving of 'IO'__ with output rows
+-- ('streamIO', 'foldIO').
+--
+-- * Type-safe __resource management__ (via 'A.Acquire', see 'new', 'with',
+-- 'uith').
+--
+-- * 'Savepoint's.
+--
+-- * A lot of logging.
+--
+-- Things not supported yet:
+--
+-- * Type-safe 'SQL'.
+--
+-- * Migrations solution.
+--
+-- If you have questions or suggestions, just say so at
+-- <https://github.com/k0001/hs-sq/issues>.
 module Sq
    ( -- * Statement
     Statement
@@ -54,6 +98,8 @@ module Sq
    , rollback
    , embed
    , Ref
+   , retry
+   , orElse
 
     -- ** Querying
    , one
@@ -63,17 +109,10 @@ module Sq
    , list
    , fold
    , foldM
-   , stream
 
-    -- * Streaming
+    -- * Interleaving
    , streamIO
    , foldIO
-
-    -- * Transaction
-   , Transaction
-   , readTransaction
-   , commitTransaction
-   , rollbackTransaction
 
     -- * Pool
    , Pool
@@ -86,11 +125,23 @@ module Sq
    , Settings (..)
    , settings
 
+    -- * Transaction
+   , Transaction
+   , readTransaction
+   , commitTransaction
+   , rollbackTransaction
+
     -- * Resources
     -- $resources
    , new
    , with
    , uith
+
+    -- * Savepoint
+   , Savepoint
+   , savepoint
+   , savepointRollback
+   , savepointRelease
 
     -- * Miscellaneuos
    , Retry (..)
@@ -146,61 +197,33 @@ import Sq.Transactional
 -- $resources
 --
 -- "Sq" relies heavily on 'A.Acquire' for safe resource management in light of
--- concurrency and dependencies between resources. Mostly, you don't have to
--- worry about it. Just do this:
+-- concurrency and dependencies between resources.
 --
--- 1. Import this library in a @qualified@ manner. It was designed to be used
---    that way.
+-- As a user of "Sq", you mostly just have to figure out how to obtain a 'Pool'.
+-- For that, you will probably benefit use one of these functions:
 --
--- @
--- import qualified "Sq"
--- @
+-- * 'with' for integrating with 'Ex.MonadMask' from the @exceptions@ library.
 --
--- 2. Initially, you will need access to a connection 'Pool'. You can
---    'A.Acquire' one through 'tempPool', 'readPool' or most commonly
---    __'writePool'__.
+-- * 'new' for integrating with 'R.MonadResource' from the @resourcet@ library.
 --
--- 3. In order to integrate your 'Pool' acquisition choice into your
---    application's resource management, you will most likely need to use one
---    of these functions:
+-- * 'uith' for integrating with 'R.MonadUnliftIO' from the @unliftio@ library.
 --
---        * 'with' for integrating with 'Ex.MonadMask' from
---          the @exceptions@ library.
---
---        * 'new' for integrating with 'R.MonadResource' from
---          the @resourcet@ library.
---
---        * 'uith' for integrating with 'R.MonadUnliftIO' from
---          the @unliftio@ library.
---
---    If you have no idea what I'm talking about, just use 'with'.
---    Here is an example:
+-- If you have no idea what I'm talking about, just use 'with'.
+-- Here is an example:
 --
 -- @
--- 'with' ('writePool' ('settings' \"\/my\/db.sqlite\")) \\(__pool__ :: 'Pool' \''Write') ->
---        /-- Here use __pool__ as necessary./
---        /-- The resources associated with it will be/
---        /-- automatically released after leaving this scope./
+-- 'with' 'tempPool' \\(__pool__ :: 'Pool' \''Write') ->
+--     /-- Here use __pool__ as necessary./
+--     /-- The resources associated with it will be/
+--     /-- automatically released after leaving this scope./
 -- @
 --
--- 4. Now that you have a 'Pool', try to solve your problems within
---    'Transactional'. For example:
+-- Now that you have a 'Pool', try to solve your problems within
+-- 'Transactional' by means of 'Sq.read', 'Sq.commit' or 'Sq.rollback'.
 --
--- @
---    "Sq".'transactional' @pool.write@ do
---        /-- Everything here happens in the same transaction./
---        markId <- "Sq".'one' getUserByEmail \"mark@example.com\"
---        'forM' friendIds \\friendId ->
---           "Sq".'one' makeFriends (markId, friendId)
---
--- @
---
--- 5. If you need to perform 'IO' actions while streaming result rows out
---    of the database, 'Transactional' won't be enough. You will need to
---    use 'foldIO' or 'streamIO'.
---
--- 6. If you have questions, just ask
---    at <https://github.com/k0001/hs-sq/issues>.
+-- However, if you need to interleave 'IO' actions while streaming result rows
+-- out of the database, 'Transactional' won't be enough. You will need to use
+-- 'foldIO' or 'streamIO'.
 
 -- | 'A.Acquire' through 'R.MonadResource'.
 --
@@ -231,8 +254,10 @@ uith = A.with
 -- | Acquire a read-'Write' 'Pool' temporarily persisted in the file-system.
 -- It will be deleted once released. This can be useful for testing.
 --
--- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
--- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
+-- * Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
+-- "Di.Core".'Di.Core.filter' to filter-out excessive logging. For example:
+--
+--       @"Di.Core".'Di.Core.filter' \\l _ _ -> l >= "Df1".'Df1.Info'@
 tempPool :: Di.Df1 -> A.Acquire (Pool Write)
 tempPool di0 = do
    d <- acquireTmpDir
@@ -240,47 +265,52 @@ tempPool di0 = do
 
 -- | Acquire a read-'Write' 'Pool' according to the given 'Settings'.
 --
--- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
--- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
+-- * Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
+-- "Di.Core".'Di.Core.filter' to filter-out excessive logging. For example:
+--
+--       @"Di.Core".'Di.Core.filter' \\l _ _ -> l >= "Df1".'Df1.Info'@
 writePool :: Di.Df1 -> Settings -> A.Acquire (Pool Write)
 writePool di0 = pool SWrite (Di.push "sq" di0)
 {-# INLINE writePool #-}
 
 -- | Acquire a 'Read'-only 'Pool' according to the given 'Settings'.
 --
--- Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
--- "Di.Core".'Di.Core.filter' to filter-out excessive logging.
+-- * Use "Di".'Di.new' to obtain the 'Di.Df1' parameter. Consider using
+-- "Di.Core".'Di.Core.filter' to filter-out excessive logging. For example:
+--
+--       @"Di.Core".'Di.Core.filter' \\l _ _ -> l >= "Df1".'Df1.Info'@
 readPool :: Di.Df1 -> Settings -> A.Acquire (Pool Read)
 readPool di0 = pool SRead (Di.push "sq" di0)
 {-# INLINE readPool #-}
 
 --------------------------------------------------------------------------------
 
--- | Executes a 'Statement' expected to return zero or one rows.
+-- | Executes a 'Statement' expected to return __zero or one__ rows.
 --
--- Throws 'ErrRows_TooMany' if more than one row.
+-- * Throws 'ErrRows_TooMany' if more than one row.
 maybe :: (SubMode t s) => Statement s i o -> i -> Transactional g r t (Maybe o)
 maybe = foldM $ foldMaybeM ErrRows_TooMany
 {-# INLINE maybe #-}
 
--- | Executes a 'Statement' expected to return exactly one row.
+-- | Executes a 'Statement' expected to return exactly __one__ row.
 --
--- Throws 'ErrRows_TooFew' if zero rows, 'ErrRows_TooMany' if more than one row.
+-- * Throws 'ErrRows_TooFew' if zero rows, 'ErrRows_TooMany' if more than one row.
 one :: (SubMode t s) => Statement s i o -> i -> Transactional g r t o
 one = foldM $ foldOneM ErrRows_TooFew ErrRows_TooMany
 {-# INLINE one #-}
 
--- | Executes a 'Statement' expected to return exactly zero rows.
+-- | Executes a 'Statement' expected to return exactly __zero__ rows.
 --
--- Throws 'ErrRows_TooMany' if more than zero rows.
+-- * Throws 'ErrRows_TooMany' if more than zero rows.
 zero :: (SubMode t s) => Statement s i o -> i -> Transactional g r t ()
 zero = foldM $ foldZeroM ErrRows_TooMany
 {-# INLINE zero #-}
 
--- | Executes a 'Statement' expected to return one or more rows.
--- Returns the length of the 'NonEmpty' list, too.
+-- | Executes a 'Statement' expected to return __one or more__ rows.
 --
--- Throws 'ErrRows_TooFew' if zero rows.
+-- * Returns the length of the 'NonEmpty' list, too.
+--
+-- * Throws 'ErrRows_TooFew' if zero rows.
 some
    :: (SubMode t s)
    => Statement s i o
@@ -289,8 +319,9 @@ some
 some = foldM $ foldNonEmptyM ErrRows_TooFew
 {-# INLINE some #-}
 
--- | Executes a 'Statement' expected to return an arbitrary
--- number of rows.  Returns the length of the list, too.
+-- | Executes a 'Statement' expected to return __zero or more__ rows.
+--
+-- * Returns the length of the list, too.
 list
    :: (SubMode t s)
    => Statement s i o
@@ -299,8 +330,7 @@ list
 list = fold foldList
 {-# INLINE list #-}
 
--- | Executes a 'Statement' and folds the rows purely in a
--- streaming fashion.
+-- | __Purely fold__ all the output rows.
 fold
    :: (SubMode t s)
    => F.Fold o z
@@ -314,24 +344,20 @@ fold = foldM . F.generalize
 
 -- | Execute a 'Read'-only 'Transactional' in a fresh 'Transaction' that will
 -- be automatically released when done.
---
--- @'read' t  =  'transactional' ('readTransaction' p)@
 read
    :: (MonadIO m, SubMode p 'Read)
    => Pool p
-   -> (forall g. Transactional g r 'Read a)
+   -> (forall g. Transactional g 'Retry 'Read a)
    -> m a
 read p = transactionalRetry $ readTransaction p
 {-# INLINE read #-}
 
 -- | Execute a read-'Write' 'Transactional' in a fresh 'Transaction' that will
 -- be automatically committed when done.
---
--- @'commit' t  =  'transactional' ('commitTransaction' p)@
 commit
    :: (MonadIO m)
    => Pool 'Write
-   -> (forall g. Transactional g r 'Write a)
+   -> (forall g. Transactional g 'Retry 'Write a)
    -> m a
 commit p = transactionalRetry $ commitTransaction p
 {-# INLINE commit #-}
@@ -339,13 +365,11 @@ commit p = transactionalRetry $ commitTransaction p
 -- | Execute a read-'Write' 'Transactional' in a fresh 'Transaction' that will
 -- be automatically rolled-back when done.
 --
--- __This is mostly useful for testing__. See 'rollbackTransaction'.
---
--- @'rollback' t  =  'transactional' ('rollbackTransaction' p)@
+-- __This is mostly useful for testing__.
 rollback
    :: (MonadIO m)
    => Pool 'Write
-   -> (forall g. Transactional g r 'Write a)
+   -> (forall g. Transactional g 'Retry 'Write a)
    -> m a
 rollback p = transactionalRetry $ rollbackTransaction p
 {-# INLINE rollback #-}

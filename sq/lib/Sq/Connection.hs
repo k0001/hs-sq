@@ -222,7 +222,9 @@ exclusiveConnection smode di0 cs = do
       R.mkAcquire1
          (Async.async (background di1 (takeMVar dms)))
          Async.uninterruptibleCancel
-   liftIO $ Async.link abackground
+   -- TODO:  Async.link should be sufficient. Figure out what I'm doing wrong.
+   liftIO $ flip Async.linkOnly abackground \se ->
+      Just Async.AsyncCancelled == Ex.fromException se
    statements :: IORef (Map SQL PreparedStatement) <-
       R.mkAcquire1 (newIORef mempty) \r ->
          atomicModifyIORef' r (mempty,) >>= traverse_ \ps ->
@@ -314,7 +316,7 @@ setBusyHandler (S.Database pDB) tmaxMS = do
             else poke pt0 t1 $> t1
       if Clock.toNanoSecs (Clock.diffTimeSpec t1 t0) < tmaxNS
          then do
-            let ms = ceiling $ logBase 10 (fromIntegral (max 1 n) :: Double)
+            let ms = ceiling $ logBase 2 (fromIntegral (max 1 n) :: Double)
             c_sqlite3_sleep ms $> 1
          else pure 0
 
@@ -328,8 +330,8 @@ setBusyHandler (S.Database pDB) tmaxMS = do
 -- * Prefer to use a 'Read'-only 'Transaction' if you are solely performing
 -- 'Read'-only 'Statement's. It will be more efficient in concurrent settings.
 --
--- * Obtain with 'Sq.read' or 'Sq.commit'. Or, if you are testing, with
--- 'Sq.rollback'.
+-- * Obtain with 'Sq.readTransaction' or 'Sq.commitTransaction'. Or, if you
+-- are testing, with 'Sq.rollbackTransaction'.
 --
 -- * If you have access to a 'Transaction' within its intended scope, then you
 -- can assume that a database transaction has started, and will eventually be
@@ -547,11 +549,14 @@ data ErrRows
    deriving stock (Eq, Show)
    deriving anyclass (Ex.Exception)
 
--- | Fold the output rows from a 'Statement' in a way that allows
+-- | __Fold__ the output rows from a 'Statement' in a way that allows
 -- interleaving 'IO' actions.
 --
--- This is simpler alternative to 'streamIO' for when all you need to do
+-- * This is simpler alternative to 'streamIO' for when all you need to do
 -- is fold.
+--
+-- * If you don't need to interleave 'IO' actions, then consider
+-- using 'Sq.fold'.
 
 -- Note: This could be defined in terms of 'streamIO', but this implementation
 -- is faster because we avoid per-row resource management.
@@ -559,6 +564,15 @@ foldIO
    :: (MonadIO m, Ex.MonadMask m, SubMode t s)
    => F.FoldM m o z
    -> A.Acquire (Transaction t)
+   -- ^ How to acquire the 'Transaction' once the @m@ is executed,
+   -- and how to release it when it's not needed anymore.
+   --
+   -- If you want this 'Statement' to be the only one in the 'Transaction',
+   -- then use one of 'Sq.readTransaction', 'Sq.commitTransaction' or
+   -- 'Sq.rollbackTransaction'.
+   --
+   -- Otherwise, if you already obtained a 'Transaction' by other means, then
+   -- simply use 'pure' to wrap a 'Transaction' in 'A.Acquire'.
    -> Statement s i o
    -> i
    -> m z
@@ -569,38 +583,30 @@ foldIO (F.FoldM fstep finit fext) atx st i = do
       flip fix acc0 \k !acc ->
          liftIO pop >>= maybe (fext acc) (fstep acc >=> k)
 
--- | Stream the output rows from a 'Statement' in a way that allows
+-- | __Stream__ the output rows from a 'Statement' in a way that allows
 -- interleaving 'IO' actions.
 --
--- An exclusive lock will be held on the 'Transaction' while the 'Z.Stream' is
--- producing rows. This may not be a problem if we are streaming from a
--- \''Read' 'Transaction' obtained from a 'Sq.Pool', because more
--- 'Transaction's can be readily be obtained from said 'Sq.Pool' and used
--- concurrently for other purposes. But if we are streaming from a \''Write'
--- 'Transaction', then all other concurrent attempts to perform a \''Write'
--- 'Transaction' will be delayed. With that in mind, consider this:
+-- * An exclusive lock will be held on the 'Transaction' while the 'Z.Stream'
+-- is producing rows.
 --
 -- * The 'Transaction' lock is released automatically if the 'Z.Stream' is
 -- consumed until exhaustion.
 --
--- * Otherwise, if you won't consume the 'Z.Stream' until exhaustion, then be
--- sure to exit @m@ by means of 'R.runResourceT' or similar as soon as possible
--- in order to release the 'Transaction' lock.
+-- * If you won't consume the 'Z.Stream' until exhaustion, then be sure to exit
+-- @m@ by means of 'R.runResourceT' or similar as soon as possible in order to
+-- release the 'Transaction' lock.
 streamIO
    :: (R.MonadResource m, SubMode t s)
    => A.Acquire (Transaction t)
-   -- ^ How to obtain the 'Transaction' once the 'Z.Stream' starts
-   -- being consumed.
+   -- ^ How to acquire the 'Transaction' once the 'Z.Stream' starts
+   -- being consumed, and how to release it when it's not needed anymore.
    --
-   -- Most likely you will be using one of @pool.read@ or @pool.commit@ here.
-   -- That is, "Sq".'read' or "Sq".'commit'. This corresponds to the idea that
-   -- no 'Statement' other than the one given to this function will be
-   -- executed during the 'Transaction'.
+   -- If you want this 'Statement' to be the only one in the 'Transaction',
+   -- then use one of 'Sq.readTransaction', 'Sq.commitTransaction or
+   -- 'Sq.rollbackTransaction'.
    --
-   -- If you already obtained a 'Transaction' by other means, then simply use
-   -- 'pure' to wrap a 'Transaction' in 'A.Acquire'. Also, in that case, and if
-   -- you are not interleaving 'IO' actions, you may prefer to use 'streamT'
-   -- within 'Transactional'.
+   -- Otherwise, if you already obtained a 'Transaction' by other means, then
+   -- simply use 'pure' to wrap a 'Transaction' in 'A.Acquire'.
    -> Statement s i o
    -> i
    -> Z.Stream (Z.Of o) m ()
@@ -654,7 +660,11 @@ rowPopper !bs Transaction{conn, di = di0} = do
 
 --------------------------------------------------------------------------------
 
--- | See 'savepointRollback'.
+-- | See 'savepoint', 'savepointRollback' and 'savepointRelease'.
+--
+-- * __WARNING__ safely dealing with 'Savepoint's can be tricky. Consider using
+-- 'Ex.catch' on 'Sq.Transactional', which is implemented using 'Savepoint' and
+-- does the right thing.
 data Savepoint = Savepoint
    { id :: SavepointId
    , rollback :: IO ()
@@ -686,15 +696,27 @@ savepoint Transaction{conn} = liftIO do
 -- related to this 'Savepoint' since the time it was obtained
 -- through 'savepoint'.
 --
--- Trying to 'savepointRollback' a 'Savepoint' that isn't reachable anymore
--- throws an exception.  A 'Savepoint' stops being reachable when the
--- relevant 'Transaction' ends, when of a 'savepointRollback' an earlier
--- 'Savepoint' on the same 'Transaction' is performed, or when it is
+-- * Trying to 'savepointRollback' a 'Savepoint' that isn't reachable anymore
+-- throws an exception.
+--
+-- * A 'Savepoint' stops being reachable when the relevant 'Transaction' ends,
+-- or when a 'savepointRollback' to an earlier 'Savepoint' on the same
+-- 'Transaction' is performed, or when it or a later 'Savepoint' is
 -- explicitely released through 'savepointRelease'.
 savepointRollback :: (MonadIO m) => Savepoint -> m ()
 savepointRollback s = liftIO s.rollback
 
--- | See 'savepointRollback'.
+-- | Release a 'Savepoint' so that it, together with any previous 'Savepoint's
+-- on the same 'Transaction', become unreachable to future uses of
+-- 'savepointRollback' or 'savepointRelease'.
+--
+-- * Trying to 'savepointRelease' a 'Savepoint' that isn't reachable anymore
+-- throws an exception.
+--
+-- * A 'Savepoint' stops being reachable when the relevant 'Transaction' ends,
+-- or when a 'savepointRollback' to an earlier 'Savepoint' on the same
+-- 'Transaction' is performed, or when it or a later 'Savepoint' is
+-- explicitely released through 'savepointRelease'.
 savepointRelease :: (MonadIO m) => Savepoint -> m ()
 savepointRelease s = liftIO s.release
 

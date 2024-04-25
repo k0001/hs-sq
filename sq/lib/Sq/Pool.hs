@@ -61,10 +61,10 @@ data Pool (p :: Mode) where
 
 -- | Use 'subPool' to obtain the 'Read'-only subset from a read-'Write' 'Pool'.
 --
--- This can be useful if you are passing the 'Pool' as an argument to some code,
+-- * Useful if you are passing the 'Pool' as an argument to some code,
 -- and you want to ensure that it can't performs 'Write' operations on it.
 --
--- The “new” 'Pool' is not new. It shares all the underlying resources with the
+-- * The “new” 'Pool' is not new. It shares all the underlying resources with the
 -- original one, including their lifetime.
 subPool :: Pool 'Write -> Pool 'Read
 subPool (Pool_Write i _w r) =
@@ -110,7 +110,8 @@ pool smode di0 cs = do
 
 -- | Acquire a read-only transaction.
 --
--- @'readTransaction' pool == pool.read@
+-- * You may need this function if you are using one of 'Sq.embed',
+-- 'Sq.foldIO' or 'Sq.streamIO'. Otherwise, just use 'Sq.read'.
 readTransaction :: Pool mode -> A.Acquire (Transaction 'Read)
 readTransaction p = poolConnectionRead p >>= connectionReadTransaction
 
@@ -118,18 +119,22 @@ readTransaction p = poolConnectionRead p >>= connectionReadTransaction
 -- the database unless there is an unhandled exception during the transaction,
 -- in which case they are rolled back.
 --
--- @'commitTransaction' pool == pool.commit@
+-- * You may need this function if you are using one of 'Sq.embed',
+-- 'Sq.foldIO' or 'Sq.streamIO'. Otherwise, just use 'Sq.commit'.
 commitTransaction :: Pool Write -> A.Acquire (Transaction 'Write)
 commitTransaction (Pool_Write _ c _) = connectionWriteTransaction True c
 
 -- | Acquire a read-write transaction where changes are always rolled back.
 -- This is mostly useful for testing purposes.
 --
--- Notice that an equivalent behavior can be achieved by
+-- * You may need this function if you are using one of 'Sq.embed',
+-- 'Sq.foldIO' or 'Sq.streamIO'. Otherwise, just use 'Sq.commit'.
+--
+-- * An equivalent behavior can be achieved by
 -- 'Control.Exception.Safe.bracket'ing changes between 'Sq.savepoint' and
--- 'Sq.rollbackTo' in a 'commitTransaction'ting transaction. Or by using 'Ex.throwM'
--- and 'Ex.catch' within 'Transactional'. However, using this 'rollback'
--- is much faster.
+-- 'Sq.rollbackTo' in a 'commitTransaction'ting transaction. Or by using
+-- 'Ex.throwM' and 'Ex.catch' within 'Transactional'. However, using a
+-- 'rollbackTransaction' is much faster than using 'Sq.Savepoint's.
 rollbackTransaction :: Pool Write -> A.Acquire (Transaction 'Write)
 rollbackTransaction (Pool_Write _ c _) = connectionWriteTransaction False c
 

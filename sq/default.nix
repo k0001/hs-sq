@@ -18,9 +18,9 @@ mkDerivation {
     template-haskell text time transformers
   ];
   testHaskellDepends = [
-    aeson base binary bytestring df1 di di-core hedgehog resourcet
-    resourcet-extra safe-exceptions tasty tasty-hedgehog tasty-hunit
-    text time
+    aeson async base binary bytestring df1 di di-core hedgehog ref-tf
+    resourcet resourcet-extra safe-exceptions tasty tasty-hedgehog
+    tasty-hunit text time
   ];
   benchmarkHaskellDepends = [
     async async-pool base containers criterion df1 di di-core resourcet

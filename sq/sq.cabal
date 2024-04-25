@@ -94,12 +94,14 @@ test-suite test
     Sq.Test.Codec
   build-depends:
     aeson,
+    async,
     binary,
     bytestring,
     di,
     di-core,
     df1,
     hedgehog,
+    ref-tf,
     resourcet,
     resourcet-extra,
     safe-exceptions,

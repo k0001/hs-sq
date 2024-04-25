@@ -64,7 +64,7 @@ sql =
 
 --------------------------------------------------------------------------------
 
--- | * A statement taking a value @i@ as input and producing rows of
+-- | * A SQL statement taking a value @i@ as input and producing rows of
 -- @o@ values as output.
 --
 -- * @s@ indicates whether the statement is 'Read'-only or read-'Write'.
