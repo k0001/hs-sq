@@ -88,7 +88,7 @@ test-suite test
   type: exitcode-stdio-1.0
   main-is: Main.hs
   hs-source-dirs: test
-  ghc-options: -O2 -Wall -threaded -rtsopts -with-rtsopts=-N -fno-prof-count-entries
+  ghc-options: -O2 -Wall -threaded -rtsopts -with-rtsopts=-N
   other-modules:
     Sq.Test
     Sq.Test.Codec
@@ -117,7 +117,7 @@ benchmark bench
   type: exitcode-stdio-1.0
   main-is: Main.hs
   hs-source-dirs: bench
-  ghc-options: -O2 -Wall -threaded -rtsopts -with-rtsopts=-N -fno-prof-count-entries
+  ghc-options: -O2 -Wall -threaded -rtsopts -with-rtsopts=-N
   build-depends:
     async,
     async-pool,
