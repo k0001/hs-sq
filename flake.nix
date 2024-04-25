@@ -2,8 +2,7 @@
   description = "Haskell 'sq' library";
 
   inputs = {
-    #    flakety.url = "github:k0001/flakety";
-    flakety.url = "git+file:///home/k/q/flakety.git";
+    flakety.url = "github:k0001/flakety";
     nixpkgs.follows = "flakety/nixpkgs";
     flake-parts.follows = "flakety/flake-parts";
     hs_resourcet-extra.url =
