@@ -94,16 +94,17 @@
         "streaming-utils": "streaming-utils"
       },
       "locked": {
-        "dirtyRev": "7f5ea191d04489a7c5e9eac04e4884280697e300-dirty",
-        "dirtyShortRev": "7f5ea19-dirty",
-        "lastModified": 1713360038,
+        "lastModified": 1714064406,
         "narHash": "sha256-HtcmCrs2DfBq4oQ/wPz2DsQJ+Ihd+NUeRuudUwIY2Cs=",
-        "type": "git",
-        "url": "file:///home/k/q/flakety.git"
+        "owner": "k0001",
+        "repo": "flakety",
+        "rev": "e59d1244867cb95a7bf052e29ed569419c31914d",
+        "type": "github"
       },
       "original": {
-        "type": "git",
-        "url": "file:///home/k/q/flakety.git"
+        "owner": "k0001",
+        "repo": "flakety",
+        "type": "github"
       }
     },
     "haskell-src-meta": {
