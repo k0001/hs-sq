@@ -42,7 +42,9 @@
 --
 -- * Type-safe 'SQL'.
 --
--- * Migrations solution.
+-- * Manual and automatic migrations solution.
+--
+-- * Probably other things.
 --
 -- If you have questions or suggestions, just say so at
 -- <https://github.com/k0001/hs-sq/issues>.
