@@ -14,10 +14,11 @@ module Sq.Names
 import Control.Applicative
 import Control.DeepSeq
 import Control.Monad
-import Data.List.NonEmpty (NonEmpty(..))
+import Data.Aeson qualified as Ae
 import Data.Attoparsec.Text qualified as AT
 import Data.Char qualified as Ch
 import Data.Coerce
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.String
 import Data.Text qualified as T
 import GHC.Records
@@ -29,10 +30,13 @@ import GHC.Records
 --
 -- Construct with 'name' or 'IsString'.
 newtype Name = Name T.Text
-   deriving newtype (Eq, Ord, Show, NFData)
+   deriving newtype (Eq, Ord, Show, NFData, Ae.ToJSON)
 
 instance IsString Name where
    fromString = either error id . name . T.pack
+
+instance Ae.FromJSON Name where
+   parseJSON = Ae.withText "Name" (either fail pure . name)
 
 instance HasField "text" Name T.Text where getField = coerce
 

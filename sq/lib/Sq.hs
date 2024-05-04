@@ -3,9 +3,6 @@
 
 -- | High-level SQLite client library
 --
--- ⚠️  __This is an early preview release of this library. Use at your own risk.__
---
---
 -- @
 -- import qualified "Sq"
 -- @
@@ -34,6 +31,8 @@
 -- * Type-safe __resource management__ (via 'A.Acquire', see 'new', 'with',
 -- 'uith').
 --
+-- * Manual __transactional migrations__ ('migrate').
+--
 -- * 'Savepoint's.
 --
 -- * A lot of logging.
@@ -42,14 +41,13 @@
 --
 -- * Type-safe 'SQL'.
 --
--- * Manual and automatic migrations solution.
 --
 -- * Probably other things.
 --
 -- If you have questions or suggestions, just say so at
 -- <https://github.com/k0001/hs-sq/issues>.
 --
--- ⚠️  __This is an early preview release of this library. Use at your own risk.__
+-- Note: This library is young and needs more testing.
 module Sq
    ( -- * Statement
     Statement
@@ -148,6 +146,14 @@ module Sq
    , savepointRollback
    , savepointRelease
 
+    -- * Migrations
+    -- $migrations
+   , migrate
+   , migration
+   , Migration
+   , MigrationId
+   , MigrationsTable
+
     -- * Miscellaneuos
    , Retry (..)
    , BindingName
@@ -170,15 +176,12 @@ module Sq
 where
 
 import Control.Exception.Safe qualified as Ex
-import Control.Foldl qualified as F
 import Control.Monad hiding (foldM)
 import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource qualified as R
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
 import Data.Function
-import Data.Int
-import Data.List.NonEmpty (NonEmpty)
 import Database.SQLite3 qualified as S
 import Di.Df1 qualified as Di
 import System.FilePath
@@ -188,6 +191,7 @@ import Sq.Connection
 import Sq.Decoders
 import Sq.Encoders
 import Sq.Input
+import Sq.Migrations
 import Sq.Mode
 import Sq.Names
 import Sq.Null
@@ -290,63 +294,6 @@ readPool di0 = pool SRead (Di.push "sq" di0)
 
 --------------------------------------------------------------------------------
 
--- | Executes a 'Statement' expected to return __zero or one__ rows.
---
--- * Throws 'ErrRows_TooMany' if more than one row.
-maybe :: (SubMode t s) => Statement s i o -> i -> Transactional g r t (Maybe o)
-maybe = foldM $ foldMaybeM ErrRows_TooMany
-{-# INLINE maybe #-}
-
--- | Executes a 'Statement' expected to return exactly __one__ row.
---
--- * Throws 'ErrRows_TooFew' if zero rows, 'ErrRows_TooMany' if more than one row.
-one :: (SubMode t s) => Statement s i o -> i -> Transactional g r t o
-one = foldM $ foldOneM ErrRows_TooFew ErrRows_TooMany
-{-# INLINE one #-}
-
--- | Executes a 'Statement' expected to return exactly __zero__ rows.
---
--- * Throws 'ErrRows_TooMany' if more than zero rows.
-zero :: (SubMode t s) => Statement s i o -> i -> Transactional g r t ()
-zero = foldM $ foldZeroM ErrRows_TooMany
-{-# INLINE zero #-}
-
--- | Executes a 'Statement' expected to return __one or more__ rows.
---
--- * Returns the length of the 'NonEmpty' list, too.
---
--- * Throws 'ErrRows_TooFew' if zero rows.
-some
-   :: (SubMode t s)
-   => Statement s i o
-   -> i
-   -> Transactional g r t (Int64, NonEmpty o)
-some = foldM $ foldNonEmptyM ErrRows_TooFew
-{-# INLINE some #-}
-
--- | Executes a 'Statement' expected to return __zero or more__ rows.
---
--- * Returns the length of the list, too.
-list
-   :: (SubMode t s)
-   => Statement s i o
-   -> i
-   -> Transactional g r t (Int64, [o])
-list = fold foldList
-{-# INLINE list #-}
-
--- | __Purely fold__ all the output rows.
-fold
-   :: (SubMode t s)
-   => F.Fold o z
-   -> Statement s i o
-   -> i
-   -> Transactional g r t z
-fold = foldM . F.generalize
-{-# INLINE fold #-}
-
---------------------------------------------------------------------------------
-
 -- | Execute a 'Read'-only 'Transactional' in a fresh 'Transaction' that will
 -- be automatically released when done.
 read
@@ -378,3 +325,41 @@ rollback
    -> m a
 rollback p = transactionalRetry $ rollbackTransaction p
 {-# INLINE rollback #-}
+
+--------------------------------------------------------------------------------
+
+-- $migrations
+--
+-- 1. List all the 'Migration's in chronological order.
+--    Each 'Migration' is a 'Transactional' action on the database, identified
+--    by a unique 'MigrationId'. Construct with 'migration'.
+--
+--     @
+--     __migrations__ :: ["Sq".'Migration']
+--     __migrations__ =
+--        [ "Sq".'migration' /\"create users table\"/ createUsersTable
+--        , "Sq".'migration' /\"add email column to users\"/ addUserEmailColumn
+--        , "Sq".'migration' /\"create articles table\"/ createArticlesTable
+--        , / ... more migrations ... /
+--        ]
+--     @
+--
+-- 2. Run any 'Migration's that haven't been run yet, if necessary, by performing
+--    'migrate' once as soon as you obtain your 'Write' connection 'Pool'.
+--    'migrate' will enforce that the 'MigrationId's, be unique, and will
+--    make sure that any migration history in the 'MigrationsTable' is
+--    compatible with the specified 'Migration's.
+--
+--     @
+--     "Sq".'migrate' pool /\"migrations\"/ __migrations__ \\case
+--        []   -> /... No migrations will run. .../
+--        mIds -> /... Some migrations will run. Maybe backup things here? .../
+--     @
+--
+-- 3. __Don't change your 'MigrationId's over time__. If you do, then the
+--    history in 'MigrationsTable' will become unrecognizable by 'migrate'.
+--    Also, avoid having the 'Transactional' code in each 'Migration' use your
+--    domain types and functions, as doing so may force you to alter past
+--    'Transactional' if your domain types and functions change. Ideally,
+--    you should write each 'Migration' in such a way that you never /have/
+--    to modify them in the future.

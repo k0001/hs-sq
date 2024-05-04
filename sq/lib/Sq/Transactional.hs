@@ -2,6 +2,12 @@ module Sq.Transactional
    ( Transactional
    , embed
    , transactionalRetry
+   , one
+   , maybe
+   , zero
+   , some
+   , list
+   , fold
    , foldM
    , Ref
    , Retry (..)
@@ -9,7 +15,7 @@ module Sq.Transactional
    , orElse
    ) where
 
-import Control.Applicative
+import Control.Applicative hiding (some)
 import Control.Concurrent
 import Control.Concurrent.STM hiding (orElse, retry)
 import Control.Exception.Safe qualified as Ex
@@ -24,9 +30,12 @@ import Control.Monad.Trans.Resource qualified as R
 import Control.Monad.Trans.Resource.Extra qualified as R hiding (runResourceT)
 import Data.Acquire qualified as A
 import Data.Coerce
+import Data.Int
 import Data.IntMap.Strict (IntMap)
 import Data.IntMap.Strict qualified as IntMap
 import Data.Kind
+import Data.List.NonEmpty (NonEmpty)
+import Prelude hiding (Read, maybe, read)
 
 import Sq.Connection
 import Sq.Mode
@@ -216,7 +225,8 @@ embed tx ta =
 --
 -- * For a non-'Transactional' version of this function, see 'Sq.foldIO'.
 foldM
-   :: (SubMode t s)
+   :: forall o z i t s g r
+    . (SubMode t s)
    => F.FoldM (Transactional g r t) o z
    -> Statement s i o
    -> i
@@ -388,3 +398,78 @@ instance MonadAtomicRef (Transactional g r t) where
                writeTVar tv $! Just a1
                pure b
             Nothing -> Ex.throwM $ resourceVanishedWithCallStack "Ref"
+
+--------------------------------------------------------------------------------
+
+-- | Executes a 'Statement' expected to return __zero or one__ rows.
+--
+-- * Throws 'ErrRows_TooMany' if more than one row.
+maybe
+   :: forall o i t s g r
+    . (SubMode t s)
+   => Statement s i o
+   -> i
+   -> Transactional g r t (Maybe o)
+maybe = foldM $ foldMaybeM ErrRows_TooMany
+{-# INLINE maybe #-}
+
+-- | Executes a 'Statement' expected to return exactly __one__ row.
+--
+-- * Throws 'ErrRows_TooFew' if zero rows, 'ErrRows_TooMany' if more than one row.
+one
+   :: forall o i t s g r
+    . (SubMode t s)
+   => Statement s i o
+   -> i
+   -> Transactional g r t o
+one = foldM $ foldOneM ErrRows_TooFew ErrRows_TooMany
+{-# INLINE one #-}
+
+-- | Executes a 'Statement' expected to return exactly __zero__ rows.
+--
+-- * Throws 'ErrRows_TooMany' if more than zero rows.
+zero
+   :: forall o i t s g r
+    . (SubMode t s)
+   => Statement s i o
+   -> i
+   -> Transactional g r t ()
+zero = foldM $ foldZeroM ErrRows_TooMany
+{-# INLINE zero #-}
+
+-- | Executes a 'Statement' expected to return __one or more__ rows.
+--
+-- * Returns the length of the 'NonEmpty' list, too.
+--
+-- * Throws 'ErrRows_TooFew' if zero rows.
+some
+   :: forall o i t s g r
+    . (SubMode t s)
+   => Statement s i o
+   -> i
+   -> Transactional g r t (Int64, NonEmpty o)
+some = foldM $ foldNonEmptyM ErrRows_TooFew
+{-# INLINE some #-}
+
+-- | Executes a 'Statement' expected to return __zero or more__ rows.
+--
+-- * Returns the length of the list, too.
+list
+   :: forall o i t s g r
+    . (SubMode t s)
+   => Statement s i o
+   -> i
+   -> Transactional g r t (Int64, [o])
+list = fold foldList
+{-# INLINE list #-}
+
+-- | __Purely fold__ all the output rows.
+fold
+   :: forall o z i t s g r
+    . (SubMode t s)
+   => F.Fold o z
+   -> Statement s i o
+   -> i
+   -> Transactional g r t z
+fold = foldM . F.generalize
+{-# INLINE fold #-}

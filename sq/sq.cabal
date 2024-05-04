@@ -1,6 +1,6 @@
 cabal-version: 2.4
 name: sq
-version: 0.0.1
+version: 0.0.2
 license: Apache-2.0
 license-file: LICENSE
 extra-source-files: README.md CHANGELOG.md
@@ -45,6 +45,7 @@ library
     Sq.Decoders
     Sq.Encoders
     Sq.Input
+    Sq.Migrations
     Sq.Mode
     Sq.Names
     Sq.Null

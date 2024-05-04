@@ -5,5 +5,6 @@ optimization: True
 documentation: True
 benchmarks: True
 tests: True
+test-show-details: streaming
 packages:
   sq/

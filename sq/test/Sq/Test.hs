@@ -1,6 +1,5 @@
 module Sq.Test (tree) where
 
-import Control.Applicative
 import Control.Concurrent
 import Control.Concurrent.Async qualified as Async
 import Control.Exception.Safe qualified as Ex
@@ -10,18 +9,17 @@ import Control.Monad.Ref
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire.Internal qualified as A
 import Data.Foldable
-import Data.Text qualified as T
 import Di qualified
 import Hedgehog qualified as H
 import Hedgehog.Gen qualified as H
 import Hedgehog.Range qualified as HR
-import Sq qualified
 import System.Timeout
 import Test.Tasty (testGroup, withResource)
 import Test.Tasty.HUnit (testCase, (@?=))
 import Test.Tasty.Hedgehog (testProperty)
 import Test.Tasty.Runners (TestTree)
 
+import Sq qualified
 import Sq.Test.Codec qualified
 
 --------------------------------------------------------------------------------
@@ -55,6 +53,7 @@ tree di = withAcquire (Sq.tempPool di) \iop ->
          ysLen H.=== fromIntegral (length ys)
          xs H.=== ys
       , testExample1 di
+      , testMigs di
       ]
 
 withAcquire :: A.Acquire a -> (IO a -> TestTree) -> TestTree
@@ -132,3 +131,45 @@ testExample1 di0 = testCase "example1" do
             timeout 500_000 (example1 pool) >>= \case
                Just () -> pure ()
                Nothing -> fail "example1: timeout!"
+
+--------------------------------------------------------------------------------
+
+testMigs :: Di.Df1 -> TestTree
+testMigs di0 = testCase "migs" do
+   Sq.with (Sq.tempPool di0) \pool -> do
+      Sq.migrate pool "migs" migsAB \ids -> ids @?= ["A", "B"]
+      Sq.migrate pool "migs" migsAB \ids -> ids @?= []
+      for_ [migsCD, []] \migs ->
+         Ex.catchJust
+            ( \case
+               Ex.StringException m _ ->
+                  guard $ m == "Incompatible migration history: [\"A\",\"B\"]"
+            )
+            (Sq.migrate pool "migs" migs mempty)
+            pure
+      Sq.migrate pool "migs" migsAB \ids -> ids @?= []
+      Sq.migrate pool "migs" (migsAB <> migsCD) \ids -> ids @?= ["C", "D"]
+      Sq.migrate pool "migs" (migsAB <> migsCD) \ids -> ids @?= []
+      Sq.read pool do
+         (2, [7, 8 :: Int]) <-
+            Sq.list
+               (Sq.readStatement mempty "x" "SELECT x FROM t ORDER BY x ASC")
+               ()
+         pure ()
+  where
+   migsAB :: [Sq.Migration]
+   migsAB =
+      [ Sq.migration "A" (pure ())
+      , Sq.migration "B" (pure ())
+      ]
+   migsCD :: [Sq.Migration]
+   migsCD =
+      [ Sq.migration "C" do
+         Sq.zero @()
+            (Sq.writeStatement mempty mempty "CREATE TABLE t (x INTEGER)")
+            ()
+      , Sq.migration "D" do
+         Sq.zero @()
+            (Sq.writeStatement mempty mempty "INSERT INTO t (x) VALUES (7), (8)")
+            ()
+      ]

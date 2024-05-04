@@ -561,7 +561,8 @@ data ErrRows
 -- Note: This could be defined in terms of 'streamIO', but this implementation
 -- is faster because we avoid per-row resource management.
 foldIO
-   :: (MonadIO m, Ex.MonadMask m, SubMode t s)
+   :: forall o z i t s m
+    . (MonadIO m, Ex.MonadMask m, SubMode t s)
    => F.FoldM m o z
    -> A.Acquire (Transaction t)
    -- ^ How to acquire the 'Transaction' once the @m@ is executed,
@@ -596,7 +597,8 @@ foldIO (F.FoldM fstep finit fext) atx st i = do
 -- @m@ by means of 'R.runResourceT' or similar as soon as possible in order to
 -- release the 'Transaction' lock.
 streamIO
-   :: (R.MonadResource m, SubMode t s)
+   :: forall o i t s m
+    . (R.MonadResource m, SubMode t s)
    => A.Acquire (Transaction t)
    -- ^ How to acquire the 'Transaction' once the 'Z.Stream' starts
    -- being consumed, and how to release it when it's not needed anymore.
