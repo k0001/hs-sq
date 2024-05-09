@@ -26,6 +26,7 @@ import Data.ByteString qualified as B
 import Data.ByteString.Builder.Prim.Internal (caseWordSize_32_64)
 import Data.ByteString.Lazy qualified as BL
 import Data.Int
+import Data.Proxy
 import Data.SOP qualified as SOP
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
@@ -221,6 +222,15 @@ instance
 decodeEither :: Decode a -> Decode b -> Decode (Either a b)
 decodeEither da db = fmap Left da <|> fmap Right db
 {-# INLINE decodeEither #-}
+
+-- | See 'decodeNS'.
+instance
+   (SOP.All DecodeDefault xs)
+   => DecodeDefault (SOP.NS SOP.I xs)
+   where
+   decodeDefault =
+      decodeNS (SOP.hcpure (Proxy @DecodeDefault) decodeDefault)
+   {-# INLINE decodeDefault #-}
 
 -- | Like 'decodeEither', but for arbitraryly large "Data.SOP".'NS' sums.
 --

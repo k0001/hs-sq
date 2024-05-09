@@ -30,6 +30,7 @@ import Data.Functor.Contravariant.Rep
 import Data.Int
 import Data.List qualified as List
 import Data.Profunctor
+import Data.Proxy
 import Data.SOP qualified as SOP
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
@@ -179,6 +180,15 @@ instance
 encodeEither :: Encode a -> Encode b -> Encode (Either a b)
 encodeEither (Encode fa) (Encode fb) = Encode $ either fa fb
 {-# INLINE encodeEither #-}
+
+-- | See 'encodeNS'.
+instance
+   (SOP.All EncodeDefault xs)
+   => EncodeDefault (SOP.NS SOP.I xs)
+   where
+   encodeDefault =
+      encodeNS (SOP.hcpure (Proxy @EncodeDefault) encodeDefault)
+   {-# INLINE encodeDefault #-}
 
 -- | Like 'encodeEither', but for arbitraryly large "Data.SOP".'NS' sums.
 --
