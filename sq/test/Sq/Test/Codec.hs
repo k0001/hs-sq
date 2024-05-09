@@ -119,7 +119,7 @@ newtype WrapAeson a = WrapAeson a
 
 instance (Ae.ToJSON a) => Sq.EncodeDefault (WrapAeson a) where
    encodeDefault =
-      contramap (\case WrapAeson a -> a) $ Sq.encodeAeson Ae.toJSON
+      contramap (\case WrapAeson a -> a) $ Sq.encodeAeson (Right . Ae.toJSON)
 
 instance (Ae.FromJSON a) => Sq.DecodeDefault (WrapAeson a) where
    decodeDefault = WrapAeson <$> Sq.decodeAeson Ae.parseJSON
