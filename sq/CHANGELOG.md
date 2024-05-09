@@ -1,4 +1,4 @@
-# Version 0.0.3
+# Version 0.1
 
 * CHANGED the type of `encodeAeson`. It takes `Either`
   an `aeson` `Encoding` or a `Value` now.

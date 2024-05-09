@@ -8,7 +8,7 @@
 }:
 mkDerivation {
   pname = "sq";
-  version = "0.0.2";
+  version = "0.1";
   src = ./.;
   libraryHaskellDepends = [
     adjunctions aeson async attoparsec base binary bytestring clock
