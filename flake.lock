@@ -34,6 +34,23 @@
         "type": "github"
       }
     },
+    "dani-servant-lucid2": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1714112891,
+        "narHash": "sha256-ZWxAbGEGSqgX6sbS7jxsDSQD0kx/7rhjBSUpGUDwF7M=",
+        "owner": "danidiaz",
+        "repo": "dani-servant-lucid2",
+        "rev": "3fefaa24f7a38bcd385a0489167dc0d96e56db2e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "danidiaz",
+        "repo": "dani-servant-lucid2",
+        "rev": "3fefaa24f7a38bcd385a0489167dc0d96e56db2e",
+        "type": "github"
+      }
+    },
     "esqueleto": {
       "flake": false,
       "locked": {
@@ -73,6 +90,7 @@
       "inputs": {
         "attoparsec-time": "attoparsec-time",
         "cborg": "cborg",
+        "dani-servant-lucid2": "dani-servant-lucid2",
         "esqueleto": "esqueleto",
         "flake-parts": "flake-parts",
         "haskell-src-meta": "haskell-src-meta",
@@ -91,14 +109,15 @@
         "scotty": "scotty",
         "singletons_3_2": "singletons_3_2",
         "smtp-mail": "smtp-mail",
-        "streaming-utils": "streaming-utils"
+        "streaming-utils": "streaming-utils",
+        "stripeapi": "stripeapi"
       },
       "locked": {
-        "lastModified": 1714064406,
-        "narHash": "sha256-HtcmCrs2DfBq4oQ/wPz2DsQJ+Ihd+NUeRuudUwIY2Cs=",
+        "lastModified": 1715254468,
+        "narHash": "sha256-jPwrNYSifAA68pw7eVWqD7VYl7/uJzXhDLznRcTShtg=",
         "owner": "k0001",
         "repo": "flakety",
-        "rev": "e59d1244867cb95a7bf052e29ed569419c31914d",
+        "rev": "d5262bc8bbed901ad2e0bec59904b60d9a5e28df",
         "type": "github"
       },
       "original": {
@@ -473,6 +492,23 @@
         "owner": "k0001",
         "repo": "streaming-utils",
         "rev": "b7acc4dd0bf4ed6fb16fd4f4999bec24dfabceb3",
+        "type": "github"
+      }
+    },
+    "stripeapi": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1711880227,
+        "narHash": "sha256-rG6Tt0XO9caVVg/ivTdDBOZ7uFzo60iXzKoOGWa1VC0=",
+        "owner": "Haskell-OpenAPI-Code-Generator",
+        "repo": "Stripe-Haskell-Library",
+        "rev": "b98f455f710c42bf8821a8c3d4e2c2aed7ff7a69",
+        "type": "github"
+      },
+      "original": {
+        "owner": "Haskell-OpenAPI-Code-Generator",
+        "repo": "Stripe-Haskell-Library",
+        "rev": "b98f455f710c42bf8821a8c3d4e2c2aed7ff7a69",
         "type": "github"
       }
     }
