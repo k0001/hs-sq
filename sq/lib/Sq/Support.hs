@@ -13,6 +13,7 @@ module Sq.Support
    , foldMaybeM
    , foldZeroM
    , foldOneM
+   , HAsum (..)
    ) where
 
 import Control.Applicative
@@ -26,6 +27,7 @@ import Data.Function
 import Data.IORef
 import Data.Int
 import Data.List.NonEmpty qualified as NEL
+import Data.SOP qualified as SOP
 import Data.String
 import Data.Word
 import GHC.IO.Exception
@@ -142,3 +144,74 @@ foldOneM
    -- ^ More than one.
    -> F.FoldM m o o
 foldOneM e0 eN = foldPostmapM (maybe (Ex.throwM e0) pure) (foldMaybeM eN)
+
+--------------------------------------------------------------------------------
+
+class HAsum h xs where
+   -- | Composes products 'SOP.NP' and 'SOP.POP' using 'Applicative', and
+   -- sums 'SOP.NS' and 'SOP.SOP' using 'Alternative'.
+   hasum :: (Alternative f) => SOP.Prod h f xs -> f (h SOP.I xs)
+
+instance (SOP.All SOP.Top xs) => HAsum SOP.NP xs where
+   hasum = asum_NP
+   {-# INLINE hasum #-}
+
+instance HAsum SOP.NS xs where
+   hasum = asum_NS
+   {-# INLINE hasum #-}
+
+instance (SOP.All2 SOP.Top xss) => HAsum SOP.POP xss where
+   hasum = asum_POP
+   {-# INLINE hasum #-}
+
+instance (SOP.All2 SOP.Top xss) => HAsum SOP.SOP xss where
+   hasum = asum_SOP
+   {-# INLINE hasum #-}
+
+-- | Keeps the first 'Alternative' that succeeds among @xs@.
+asum_NS :: (Alternative f) => SOP.NP f xs -> f (SOP.NS SOP.I xs)
+asum_NS = \case
+   this SOP.:* SOP.Nil ->
+      -- We handle this case specially so we can preserve 'this''s error.
+      fmap (SOP.Z . SOP.I) this
+   this SOP.:* rest ->
+      fmap (SOP.Z . SOP.I) this <|> fmap SOP.S (asum_NS rest)
+   SOP.Nil ->
+      -- We could use the type system to force @xs@ to be non-empty,
+      -- but this approach probably has better ergonomics for users.
+      empty
+
+-- | Keeps the first 'Alternative' that succeeds among @xss@.
+asum_SOP
+   :: (Alternative f, SOP.All2 SOP.Top xss)
+   => SOP.POP f xss
+   -> f (SOP.SOP SOP.I xss)
+asum_SOP = \(SOP.POP pp) -> fmap SOP.SOP $ case pp of
+   this SOP.:* SOP.Nil ->
+      -- We handle this case specially so we can preserve 'this''s error.
+      fmap SOP.Z (asum_NP this)
+   this SOP.:* rest ->
+      fmap SOP.Z (asum_NP this)
+         <|> fmap (SOP.S . SOP.unSOP) (asum_SOP (SOP.POP rest))
+   SOP.Nil ->
+      -- We could use the type system to force @xss@ to be non-empty,
+      -- but this approach probably has better ergonomics for users.
+      empty
+
+-- | This is just 'SOP.sequence_NP'.  It doesn't use any 'Alternative'
+-- features.  We write it down for completeness.
+asum_NP
+   :: (Applicative f, SOP.All SOP.Top xs)
+   => SOP.NP f xs
+   -> f (SOP.NP SOP.I xs)
+asum_NP = SOP.hsequence
+{-# INLINE asum_NP #-}
+
+-- | This is just 'SOP.sequence_POP'.  It doesn't use any 'Alternative'
+-- features.  We write it down for completeness.
+asum_POP
+   :: (Applicative f, SOP.All2 SOP.Top xss)
+   => SOP.POP f xss
+   -> f (SOP.POP SOP.I xss)
+asum_POP = SOP.hsequence
+{-# INLINE asum_POP #-}

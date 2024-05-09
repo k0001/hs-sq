@@ -5,6 +5,7 @@ module Sq.Decoders
    , DecodeDefault (..)
    , decodeMaybe
    , decodeEither
+   , decodeNS
    , decodeSizedIntegral
    , decodeBinary
    , decodeRead
@@ -25,6 +26,7 @@ import Data.ByteString qualified as B
 import Data.ByteString.Builder.Prim.Internal (caseWordSize_32_64)
 import Data.ByteString.Lazy qualified as BL
 import Data.Int
+import Data.SOP qualified as SOP
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Unsafe qualified as T
@@ -39,6 +41,7 @@ import Numeric.Natural
 import Text.Read (readEither, readMaybe)
 
 import Sq.Null (Null)
+import Sq.Support
 
 --------------------------------------------------------------------------------
 
@@ -211,9 +214,21 @@ instance
 -- | @
 -- 'decodeEither' da db = fmap 'Left' da '<|>' fmap 'Right' db
 -- @
+--
+-- __WARNING__ This is probably not what you are looking for. The
+-- underlying 'S.SQLData' doesn't carry any /tag/ for discriminating
+-- between @a@ and @b@.
 decodeEither :: Decode a -> Decode b -> Decode (Either a b)
 decodeEither da db = fmap Left da <|> fmap Right db
 {-# INLINE decodeEither #-}
+
+-- | Like 'decodeEither', but for arbitraryly large "Data.SOP".'NS' sums.
+--
+-- __WARNING__ This is probably not what you are looking for. The underlying
+-- 'S.SQLData' doesn't carry any /tag/ for discriminating among @xs@.
+decodeNS :: SOP.NP Decode xs -> Decode (SOP.NS SOP.I xs)
+decodeNS = hasum
+{-# INLINE decodeNS #-}
 
 -- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'
 -- depicting a literal integer.

@@ -62,6 +62,8 @@ module Sq
    , Input
    , encode
    , input
+   , hinput
+   , HInput
 
     -- *** Encode
    , Encode (..)
@@ -69,6 +71,7 @@ module Sq
    , EncodeDefault (..)
    , encodeMaybe
    , encodeEither
+   , encodeNS
    , encodeSizedIntegral
    , encodeAeson
    , encodeBinary
@@ -78,6 +81,8 @@ module Sq
    , Output
    , decode
    , output
+   , houtput
+   , HOutput
 
     -- *** Decode
    , Decode (..)
@@ -85,6 +90,7 @@ module Sq
    , DecodeDefault (..)
    , decodeMaybe
    , decodeEither
+   , decodeNS
    , decodeSizedIntegral
    , decodeAeson
    , decodeBinary

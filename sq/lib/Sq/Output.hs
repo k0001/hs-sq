@@ -6,17 +6,21 @@ module Sq.Output
    , decode
    , runOutput
    , output
+   , houtput
+   , HOutput
    ) where
 
 import Control.Applicative
 import Control.Exception.Safe qualified as Ex
 import Control.Monad
 import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
+import Data.SOP qualified as SOP
 import Data.String
 import Database.SQLite3 qualified as S
 
 import Sq.Decoders
 import Sq.Names
+import Sq.Support
 
 --------------------------------------------------------------------------------
 
@@ -195,3 +199,16 @@ instance (Monoid o) => Monoid (Output o) where
 instance (DecodeDefault i) => IsString (Output i) where
    fromString s = decode (fromString s) decodeDefault
    {-# INLINE fromString #-}
+
+-- | 'Data.Kind.Constraint' to be satisfied for using 'honput'.
+type HOutput h xs = HAsum h xs
+
+-- | Given a "Data.SOP".'SOP.Prod' containing all the possible 'Output'
+-- decoders, obtain an 'Output' for any 'SOP.NS', 'SOP.NP', 'SOP.SOP' or
+-- 'SOP.POP' having that same @xs@.
+--
+-- Composes products 'SOP.NP' and 'SOP.POP' using 'Applicative',
+-- and sums 'SOP.NS' and 'SOP.SOP' using 'Alternative'.
+houtput :: (HOutput h xs) => SOP.Prod h Output xs -> Output (h SOP.I xs)
+houtput = hasum
+{-# INLINE houtput #-}

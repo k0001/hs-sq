@@ -55,6 +55,7 @@ library
     Sq.Support
     Sq.Transactional
   build-depends:
+    adjunctions,
     aeson,
     async,
     attoparsec,
@@ -64,8 +65,8 @@ library
     containers,
     contravariant,
     deepseq,
-    di-df1,
     di-core,
+    di-df1,
     direct-sqlite,
     directory,
     exceptions,
@@ -77,6 +78,7 @@ library
     resourcet,
     resourcet-extra,
     safe-exceptions,
+    sop-core,
     stm,
     streaming,
     template-haskell,
@@ -106,6 +108,7 @@ test-suite test
     resourcet,
     resourcet-extra,
     safe-exceptions,
+    sop-core,
     sq,
     tasty,
     tasty-hedgehog,

@@ -5,6 +5,7 @@ module Sq.Encoders
    , EncodeDefault (..)
    , encodeMaybe
    , encodeEither
+   , encodeNS
    , encodeSizedIntegral
    , encodeBinary
    , encodeShow
@@ -25,8 +26,11 @@ import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Short qualified as BS
 import Data.Coerce
 import Data.Functor.Contravariant
+import Data.Functor.Contravariant.Rep
 import Data.Int
 import Data.List qualified as List
+import Data.Profunctor
+import Data.SOP qualified as SOP
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Builder qualified as TB
@@ -59,6 +63,11 @@ newtype Encode a
      -- deal with those obscure corner cases.
      Encode (a -> Either ErrEncode S.SQLData)
    deriving (Contravariant) via Op (Either ErrEncode S.SQLData)
+
+instance Representable Encode where
+   type Rep Encode = Either ErrEncode S.SQLData
+   tabulate = Encode
+   index = unEncode
 
 unEncode :: Encode a -> a -> Either ErrEncode S.SQLData
 unEncode = coerce
@@ -163,9 +172,25 @@ instance
    encodeDefault = encodeEither encodeDefault encodeDefault
 
 -- | @a@'s 'S.ColumnType' if 'Left', otherwise @b@'s 'S.ColumnType'.
+--
+-- __WARNING__ This is probably not what you are looking for. The
+-- underlying 'S.SQLData' won't carry any /tag/ for discriminating
+-- between @a@ and @b@.
 encodeEither :: Encode a -> Encode b -> Encode (Either a b)
 encodeEither (Encode fa) (Encode fb) = Encode $ either fa fb
 {-# INLINE encodeEither #-}
+
+-- | Like 'encodeEither', but for arbitraryly large "Data.SOP".'NS' sums.
+--
+-- __WARNING__ This is probably not what you are looking for. The underlying
+-- 'S.SQLData' won't carry any /tag/ for discriminating among @xs@.
+encodeNS :: (SOP.SListI xs) => SOP.NP Encode xs -> Encode (SOP.NS SOP.I xs)
+encodeNS (nse :: SOP.NP Encode xs) = Encode (SOP.hcollapse . g)
+  where
+   g :: SOP.NS SOP.I xs -> SOP.NS (SOP.K (Rep Encode)) xs
+   g = SOP.hap (SOP.hmap f nse)
+   f :: Encode a -> (SOP.I SOP.-.-> SOP.K (Rep Encode)) a
+   f = SOP.fn . dimap SOP.unI SOP.K . unEncode
 
 -- | 'S.IntegerColumn'. Encodes 'False' as @0@ and 'True' as @1@.
 instance EncodeDefault Bool where
@@ -362,7 +387,6 @@ instance EncodeDefault Time.CalendarDiffTime where
 -- @±hh:mm@
 instance EncodeDefault Time.TimeZone where
    encodeDefault = Time.iso8601Show >$< encodeDefault
-
 
 --------------------------------------------------------------------------------
 

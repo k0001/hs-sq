@@ -5,6 +5,8 @@ module Sq.Input
    , runInput
    , encode
    , input
+   , hinput
+   , HInput
    , BoundInput
    , bindInput
    , ErrInput (..)
@@ -17,7 +19,11 @@ import Data.Bifunctor
 import Data.Coerce
 import Data.Functor.Contravariant
 import Data.Functor.Contravariant.Divisible
+import Data.Functor.Contravariant.Rep
 import Data.Map.Strict qualified as Map
+import Data.Profunctor
+import Data.SOP qualified as SOP
+import Data.SOP.Constraint qualified as SOP
 import Data.String
 import Data.Text qualified as T
 import Database.SQLite3 qualified as S
@@ -48,6 +54,11 @@ newtype Input i = Input (i -> Map.Map BindingName (Either ErrEncode S.SQLData))
       , Decidable
       )
       via Op (Map.Map BindingName (Either ErrEncode S.SQLData))
+
+instance Representable Input where
+   type Rep Input = Map.Map BindingName (Either ErrEncode S.SQLData)
+   tabulate = Input
+   index = runInput
 
 runInput :: Input i -> i -> Map.Map BindingName (Either ErrEncode S.SQLData)
 runInput = coerce
@@ -161,3 +172,29 @@ data ErrInput = ErrInput BindingName ErrEncode
 rawBoundInput :: BoundInput -> Map.Map T.Text S.SQLData
 rawBoundInput = coerce
 {-# INLINE rawBoundInput #-}
+
+--------------------------------------------------------------------------------
+
+-- | 'Data.Kind.Constraint' to be satisfied for using 'hinput'.
+type HInput h xs =
+   ( SOP.AllN h SOP.Top xs
+   , SOP.HAp (SOP.Prod h)
+   , SOP.HAp h
+   , SOP.HTraverse_ h
+   , SOP.SListIN (SOP.Prod h) xs
+   )
+
+-- | Given a "Data.SOP" 'SOP.Prod'uct containing the 'Input's for encoding each
+-- of @xs@, obtain an 'Input' able to encode any of 'SOP.NS', 'SOP.NP',
+-- 'SOP.SOP' or 'SOP.POP' for that same @xs@.
+--
+-- You can see 'hinput' as an alternative 'divide', 'choose' or a combination
+-- of those for types other than '(,)' and 'Either'.
+hinput :: (HInput h xs) => SOP.Prod h Input xs -> Input (h SOP.I xs)
+hinput (ph :: SOP.Prod h Input xs) =
+   Input (SOP.hcfoldMap (SOP.Proxy @SOP.Top) SOP.unK . g)
+  where
+   g :: h SOP.I xs -> h (SOP.K (Rep Input)) xs
+   g = SOP.hap (SOP.hmap f ph)
+   f :: Input a -> (SOP.I SOP.-.-> SOP.K (Rep Input)) a
+   f = SOP.fn . dimap SOP.unI SOP.K . runInput

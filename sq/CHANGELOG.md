@@ -1,3 +1,10 @@
+# Version 0.0.3
+
+* Added `hinput`, `houtput`, `encodeNS`, `decodeNS`.
+
+* Added `Contravariant` `Rep` instance for `Encode` and `Input`.
+
+
 # Version 0.0.2
 
 * Added `FromJSON`, `ToJSON` instances for `Name`.
