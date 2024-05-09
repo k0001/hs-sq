@@ -15,7 +15,6 @@ where
 
 import Control.Exception.Safe qualified as Ex
 import Data.Aeson qualified as Ae
-import Data.Aeson.Text qualified as Ae
 import Data.Bifunctor
 import Data.Binary.Put qualified as Bin
 import Data.Bits
@@ -35,6 +34,7 @@ import Data.SOP qualified as SOP
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Builder qualified as TB
+import Data.Text.Lazy.Encoding qualified as TL
 import Data.Time qualified as Time
 import Data.Time.Format.ISO8601 qualified as Time
 import Data.Void
@@ -398,6 +398,16 @@ instance EncodeDefault Time.CalendarDiffTime where
 instance EncodeDefault Time.TimeZone where
    encodeDefault = Time.iso8601Show >$< encodeDefault
 
+-- | See @'encodeAeson' 'Left'@.
+instance EncodeDefault Ae.Encoding where
+   encodeDefault = encodeAeson Left
+   {-# INLINE encodeDefault #-}
+
+-- | See @'encodeAeson' 'Right'@.
+instance EncodeDefault Ae.Value where
+   encodeDefault = encodeAeson Right
+   {-# INLINE encodeDefault #-}
+
 --------------------------------------------------------------------------------
 
 -- | 'S.BlobColumn'.
@@ -411,6 +421,11 @@ encodeShow = show >$< (encodeDefault @String)
 {-# INLINE encodeShow #-}
 
 -- | Encodes as 'S.TextColumn'.
-encodeAeson :: (a -> Ae.Value) -> Encode a
-encodeAeson f = contramap (Ae.encodeToLazyText . f) (encodeDefault @TL.Text)
-{-# INLINE encodeAeson #-}
+encodeAeson :: (a -> Either Ae.Encoding Ae.Value) -> Encode a
+encodeAeson f =
+   contramap
+      (either g (g . Ae.toEncoding) . f)
+      (encodeDefault @TL.Text)
+  where
+   g :: Ae.Encoding -> TL.Text
+   g = TL.decodeUtf8 . BB.toLazyByteString . Ae.fromEncoding
