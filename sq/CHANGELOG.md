@@ -4,6 +4,8 @@
 
 * Added `Contravariant` `Rep` instance for `Encode` and `Input`.
 
+* Added `InputDefault`, `OutputDefault`.
+
 
 # Version 0.0.2
 

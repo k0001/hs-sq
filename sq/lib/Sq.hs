@@ -64,6 +64,7 @@ module Sq
    , input
    , hinput
    , HInput
+   , InputDefault(..)
 
     -- *** Encode
    , Encode (..)
@@ -83,6 +84,7 @@ module Sq
    , output
    , houtput
    , HOutput
+   , OutputDefault(..)
 
     -- *** Decode
    , Decode (..)

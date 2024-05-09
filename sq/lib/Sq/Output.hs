@@ -8,6 +8,7 @@ module Sq.Output
    , output
    , houtput
    , HOutput
+   , OutputDefault(..)
    ) where
 
 import Control.Applicative
@@ -212,3 +213,13 @@ type HOutput h xs = HAsum h xs
 houtput :: (HOutput h xs) => SOP.Prod h Output xs -> Output (h SOP.I xs)
 houtput = hasum
 {-# INLINE houtput #-}
+
+--------------------------------------------------------------------------------
+
+-- | Default way to decode the 'Output' from a 'Sq.Statement' as a Haskell
+-- value of type @a@.
+--
+-- If there there exist also a 'Sq.InputDefault' instance for @o@, then it
+-- must roundtrip with the 'Sq.OutputDefault' instance for @o@.
+class OutputDefault o where
+   outputDefault :: Output o

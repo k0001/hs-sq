@@ -11,6 +11,7 @@ module Sq.Input
    , bindInput
    , ErrInput (..)
    , rawBoundInput
+   , InputDefault (..)
    ) where
 
 import Control.DeepSeq
@@ -198,3 +199,13 @@ hinput (ph :: SOP.Prod h Input xs) =
    g = SOP.hap (SOP.hmap f ph)
    f :: Input a -> (SOP.I SOP.-.-> SOP.K (Rep Input)) a
    f = SOP.fn . dimap SOP.unI SOP.K . runInput
+
+--------------------------------------------------------------------------------
+
+-- | Default way to encode a Haskell value of type @i@ as the 'Input' to a
+-- 'Sq.Statement'.
+--
+-- If there there exist also a 'Sq.OutputDefault' instance for @i@, then it
+-- must roundtrip with the 'Sq.InputDefault' instance for @i@.
+class InputDefault i where
+   inputDefault :: Input i
