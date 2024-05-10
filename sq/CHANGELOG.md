@@ -7,7 +7,7 @@
 
 * Added `Contravariant` `Rep` instance for `Encode` and `Input`.
 
-* Added `InputDefault`, `OutputDefault`.
+* Added `InputDefault`, `OutputDefault` and related instances.
 
 * Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`,
   and for `binary`'s `Put`.

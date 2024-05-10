@@ -210,3 +210,11 @@ hinput (ph :: SOP.Prod h Input xs) =
 -- must roundtrip with the 'Sq.InputDefault' instance for @i@.
 class InputDefault i where
    inputDefault :: Input i
+
+instance InputDefault (Map.Map Name S.SQLData) where
+   inputDefault = Input $ Map.foldMapWithKey \n d ->
+      Map.singleton (BindingName (pure n)) (Right d)
+
+instance InputDefault (Map.Map BindingName S.SQLData) where
+   inputDefault = Input $ Map.foldMapWithKey \bn d ->
+      Map.singleton bn (Right d)
