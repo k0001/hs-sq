@@ -8,14 +8,17 @@ module Sq.Encoders
    , encodeNS
    , encodeSizedIntegral
    , encodeBinary
+   , encodeBinary'
    , encodeShow
    , encodeAeson
+   , encodeAeson'
    )
 where
 
 import Control.Exception.Safe qualified as Ex
 import Data.Aeson qualified as Ae
 import Data.Bifunctor
+import Data.Binary qualified as Bin
 import Data.Binary.Put qualified as Bin
 import Data.Bits
 import Data.Bool
@@ -400,29 +403,43 @@ instance EncodeDefault Time.TimeZone where
 
 -- | See @'encodeAeson' 'Left'@.
 instance EncodeDefault Ae.Encoding where
-   encodeDefault = encodeAeson Left
+   encodeDefault = encodeAeson' Left
    {-# INLINE encodeDefault #-}
 
 -- | See @'encodeAeson' 'Right'@.
 instance EncodeDefault Ae.Value where
-   encodeDefault = encodeAeson Right
+   encodeDefault = encodeAeson' Right
+   {-# INLINE encodeDefault #-}
+
+instance EncodeDefault Bin.Put where
+   encodeDefault = encodeBinary' id
    {-# INLINE encodeDefault #-}
 
 --------------------------------------------------------------------------------
 
--- | 'S.BlobColumn'.
-encodeBinary :: (a -> Bin.Put) -> Encode a
-encodeBinary f = contramap (Bin.runPut . f) (encodeDefault @BL.ByteString)
+-- | @'encodeBinary'  =  'encodeBinary'' "Data.Binary".'Bin.put'
+encodeBinary :: (Bin.Binary a) => Encode a
+encodeBinary = encodeBinary' Bin.put
 {-# INLINE encodeBinary #-}
+
+-- | 'S.BlobColumn'.
+encodeBinary' :: (a -> Bin.Put) -> Encode a
+encodeBinary' f = contramap (Bin.runPut . f) (encodeDefault @BL.ByteString)
+{-# INLINE encodeBinary' #-}
 
 -- | 'S.TextColumn'.
 encodeShow :: (Show a) => Encode a
 encodeShow = show >$< (encodeDefault @String)
 {-# INLINE encodeShow #-}
 
+-- | @'encodeAeson'  =  'encodeAeson' ('Left' . "Data.Aeson".'Ae.toEncoding')@
+encodeAeson :: (Ae.ToJSON a) => Encode a
+encodeAeson = encodeAeson' (Left . Ae.toEncoding)
+{-# INLINE encodeAeson #-}
+
 -- | Encodes as 'S.TextColumn'.
-encodeAeson :: (a -> Either Ae.Encoding Ae.Value) -> Encode a
-encodeAeson f =
+encodeAeson' :: (a -> Either Ae.Encoding Ae.Value) -> Encode a
+encodeAeson' f =
    contramap
       (either g (g . Ae.toEncoding) . f)
       (encodeDefault @TL.Text)

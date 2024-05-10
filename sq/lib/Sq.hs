@@ -75,7 +75,9 @@ module Sq
    , encodeNS
    , encodeSizedIntegral
    , encodeAeson
+   , encodeAeson'
    , encodeBinary
+   , encodeBinary'
    , encodeShow
 
     -- ** Output
@@ -95,7 +97,9 @@ module Sq
    , decodeNS
    , decodeSizedIntegral
    , decodeAeson
+   , decodeAeson'
    , decodeBinary
+   , decodeBinary'
    , decodeRead
 
     -- ** Name

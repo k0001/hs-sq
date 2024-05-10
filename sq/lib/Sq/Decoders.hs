@@ -8,8 +8,10 @@ module Sq.Decoders
    , decodeNS
    , decodeSizedIntegral
    , decodeBinary
+   , decodeBinary'
    , decodeRead
    , decodeAeson
+   , decodeAeson'
    ) where
 
 import Control.Applicative
@@ -20,6 +22,7 @@ import Control.Monad.Trans.Reader
 import Data.Aeson qualified as Ae
 import Data.Aeson.Types qualified as Ae
 import Data.Bifunctor
+import Data.Binary qualified as Bin
 import Data.Binary.Get qualified as Bin
 import Data.Bits
 import Data.ByteString qualified as B
@@ -412,9 +415,14 @@ instance DecodeDefault Float where
 
 --------------------------------------------------------------------------------
 
+-- @'decodeBinary'  =  'decodeBinary'' "Data.Binary".'Bin.get'@
+decodeBinary :: Bin.Binary a => Decode a
+decodeBinary = decodeBinary' Bin.get
+{-# INLINE decodeBinary #-}
+
 -- | 'S.BlobColumn'.
-decodeBinary :: Bin.Get a -> Decode a
-decodeBinary ga = flip decodeRefine (decodeDefault @BL.ByteString) \bl ->
+decodeBinary' :: Bin.Get a -> Decode a
+decodeBinary' ga = flip decodeRefine (decodeDefault @BL.ByteString) \bl ->
    case Bin.runGetOrFail ga bl of
       Right (_, _, a) -> Right a
       Left (_, _, s) -> Left s
@@ -424,10 +432,14 @@ decodeRead :: (Prelude.Read a) => Decode a
 decodeRead = decodeRefine readEither (decodeDefault @String)
 {-# INLINE decodeRead #-}
 
+-- | @'decodeAeson' = 'decodeAeson'' "Data.Aeson".'Ae.parseJSON'@
+decodeAeson :: (Ae.FromJSON a) => Decode a
+decodeAeson = decodeAeson' Ae.parseJSON
+{-# INLINE decodeAeson #-}
+
 -- | 'S.TextColumn'.
-decodeAeson :: forall a. (Ae.Value -> Ae.Parser a) -> Decode a
-decodeAeson p =
+decodeAeson' :: (Ae.Value -> Ae.Parser a) -> Decode a
+decodeAeson' p =
    decodeRefine
       (Ae.eitherDecodeStrictText >=> Ae.parseEither p)
       (decodeDefault @T.Text)
-{-# INLINE decodeAeson #-}

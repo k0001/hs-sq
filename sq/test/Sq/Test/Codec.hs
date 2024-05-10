@@ -109,20 +109,19 @@ newtype WrapBinary a = WrapBinary a
    deriving newtype (Eq, Show)
 
 instance (Bin.Binary a) => Sq.EncodeDefault (WrapBinary a) where
-   encodeDefault = contramap (\case WrapBinary a -> a) $ Sq.encodeBinary Bin.put
+   encodeDefault = Sq.encodeBinary >$$< \(WrapBinary a) -> a
 
 instance (Bin.Binary a) => Sq.DecodeDefault (WrapBinary a) where
-   decodeDefault = WrapBinary <$> Sq.decodeBinary Bin.get
+   decodeDefault = WrapBinary <$> Sq.decodeBinary
 
 newtype WrapAeson a = WrapAeson a
    deriving newtype (Eq, Show)
 
 instance (Ae.ToJSON a) => Sq.EncodeDefault (WrapAeson a) where
-   encodeDefault =
-      contramap (\case WrapAeson a -> a) $ Sq.encodeAeson (Right . Ae.toJSON)
+   encodeDefault = Sq.encodeAeson >$$< \(WrapAeson a) -> a
 
 instance (Ae.FromJSON a) => Sq.DecodeDefault (WrapAeson a) where
-   decodeDefault = WrapAeson <$> Sq.decodeAeson Ae.parseJSON
+   decodeDefault = WrapAeson <$> Sq.decodeAeson
 
 idStatement
    :: (Sq.EncodeDefault x, Sq.DecodeDefault x)

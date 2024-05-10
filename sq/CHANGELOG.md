@@ -1,15 +1,17 @@
 # Version 0.1
 
-* CHANGED the type of `encodeAeson`. It takes `Either`
-  an `aeson` `Encoding` or a `Value` now.
+* CHANGED the type of `encodeAeson` and `encodeBinary`.
 
-* Added `hinput`, `houtput`, `encodeNS`, `decodeNS`.
+* Added `hinput`, `houtput`, `encodeNS`, `decodeNS`, `encodeAeson'`,
+  `encodeBinary'`.
 
 * Added `Contravariant` `Rep` instance for `Encode` and `Input`.
 
 * Added `InputDefault`, `OutputDefault`.
 
-* Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`.
+* Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`,
+  and for `binary`'s `Put`.
+
 
 # Version 0.0.2
 
