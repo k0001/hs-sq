@@ -14,6 +14,7 @@
 
 * Export `BindingName` constructor.
 
+
 # Version 0.0.2
 
 * Added `FromJSON`, `ToJSON` instances for `Name`.

@@ -1,4 +1,5 @@
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Sq.Output
    ( Output
@@ -17,6 +18,7 @@ import Control.Monad
 import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
 import Data.Coerce
 import Data.List.NonEmpty qualified as NEL
+import Data.Proxy
 import Data.SOP qualified as SOP
 import Data.String
 import Database.SQLite3 qualified as S
@@ -216,6 +218,16 @@ houtput :: (HOutput h xs) => SOP.Prod h Output xs -> Output (h SOP.I xs)
 houtput = hasum
 {-# INLINE houtput #-}
 
+-- | We don't export this, because we export 'OutputDefault' instances for
+-- 'SOP.NS', 'SOP.NP', 'SOP.SOP' and 'SOP.POP'.
+houtputDefault
+   :: ( HOutput h xs
+      , SOP.AllN (SOP.Prod h) OutputDefault xs
+      , SOP.HPure (SOP.Prod h)
+      )
+   => Output (h SOP.I xs)
+houtputDefault = houtput (SOP.hcpure (Proxy @OutputDefault) outputDefault)
+
 --------------------------------------------------------------------------------
 
 -- | Default way to decode the 'Output' from a 'Sq.Statement' as a Haskell
@@ -225,3 +237,69 @@ houtput = hasum
 -- must roundtrip with the 'Sq.OutputDefault' instance for @o@.
 class OutputDefault o where
    outputDefault :: Output o
+
+-- | Read "Data.SOP".
+--
+-- __WARNING__ This may lead to unexpected results if the underlying
+-- 'OutputDefault's don't check for any /tag/ for discriminating between the
+-- various @xss@.
+instance
+   (SOP.SListI2 xss, SOP.All2 OutputDefault xss)
+   => OutputDefault (SOP.SOP SOP.I xss)
+   where
+   outputDefault = houtputDefault
+   {-# INLINE outputDefault #-}
+
+-- | Read "Data.SOP".
+instance
+   (SOP.SListI2 xss, SOP.All2 OutputDefault xss)
+   => OutputDefault (SOP.POP SOP.I xss)
+   where
+   outputDefault = houtputDefault
+   {-# INLINE outputDefault #-}
+
+-- | Read "Data.SOP".
+instance
+   (SOP.SListI xs, SOP.All OutputDefault xs)
+   => OutputDefault (SOP.NP SOP.I xs)
+   where
+   outputDefault = houtputDefault
+   {-# INLINE outputDefault #-}
+
+-- | Read "Data.SOP".
+--
+-- __WARNING__ This may lead to unexpected results if the underlying
+-- 'OutputDefault's don't check for any /tag/ for discriminating between
+-- the various @xs@.
+instance
+   (SOP.SListI xs, SOP.All OutputDefault xs)
+   => OutputDefault (SOP.NS SOP.I xs)
+   where
+   outputDefault = houtputDefault
+   {-# INLINE outputDefault #-}
+
+instance (OutputDefault a, OutputDefault b) => OutputDefault (a, b) where
+   outputDefault = (,) <$> outputDefault <*> outputDefault
+
+instance
+   (OutputDefault a, OutputDefault b, OutputDefault c)
+   => OutputDefault (a, b, c)
+   where
+   outputDefault = (,,) <$> outputDefault <*> outputDefault <*> outputDefault
+
+instance
+   (OutputDefault a, OutputDefault b, OutputDefault c, OutputDefault d)
+   => OutputDefault (a, b, c, d)
+   where
+   outputDefault =
+      (,,,)
+         <$> outputDefault
+         <*> outputDefault
+         <*> outputDefault
+         <*> outputDefault
+
+-- | __WARNING__ This may lead to unexpected results if the underlying
+-- 'OutputDefault's don't check for any /tag/ for discriminating between @a@
+-- and @b@.
+instance (OutputDefault a, OutputDefault b) => OutputDefault (Either a b) where
+   outputDefault = fmap Left outputDefault <|> fmap Right outputDefault

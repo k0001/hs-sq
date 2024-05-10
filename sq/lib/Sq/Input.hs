@@ -1,4 +1,5 @@
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 module Sq.Input
    ( Input
@@ -24,6 +25,7 @@ import Data.Functor.Contravariant.Rep
 import Data.List.NonEmpty qualified as NEL
 import Data.Map.Strict qualified as Map
 import Data.Profunctor
+import Data.Proxy
 import Data.SOP qualified as SOP
 import Data.SOP.Constraint qualified as SOP
 import Data.String
@@ -192,14 +194,24 @@ type HInput h xs =
 --
 -- You can see 'hinput' as an alternative 'divide', 'choose' or a combination
 -- of those for types other than '(,)' and 'Either'.
-hinput :: (HInput h xs) => SOP.Prod h Input xs -> Input (h SOP.I xs)
-hinput (ph :: SOP.Prod h Input xs) =
-   Input (SOP.hcfoldMap (SOP.Proxy @SOP.Top) SOP.unK . g)
+hinput
+   :: forall h xs
+    . (HInput h xs)
+   => SOP.Prod h Input xs
+   -> Input (h SOP.I xs)
+hinput ph = Input (SOP.hcfoldMap (SOP.Proxy @SOP.Top) SOP.unK . g)
   where
    g :: h SOP.I xs -> h (SOP.K (Rep Input)) xs
    g = SOP.hap (SOP.hmap f ph)
    f :: Input a -> (SOP.I SOP.-.-> SOP.K (Rep Input)) a
    f = SOP.fn . dimap SOP.unI SOP.K . runInput
+
+-- | We don't export this, because we export 'InputDefault' instances for
+-- 'SOP.NS', 'SOP.NP', 'SOP.SOP' and 'SOP.POP'.
+hinputDefault
+   :: (HInput h xs, SOP.AllN (SOP.Prod h) InputDefault xs)
+   => Input (h SOP.I xs)
+hinputDefault = hinput (SOP.hcpure (Proxy @InputDefault) inputDefault)
 
 --------------------------------------------------------------------------------
 
@@ -218,3 +230,66 @@ instance InputDefault (Map.Map Name S.SQLData) where
 instance InputDefault (Map.Map BindingName S.SQLData) where
    inputDefault = Input $ Map.foldMapWithKey \bn d ->
       Map.singleton bn (Right d)
+
+instance (InputDefault a, InputDefault b) => InputDefault (a, b) where
+   inputDefault = divided inputDefault inputDefault
+   {-# INLINE inputDefault #-}
+
+instance
+   (InputDefault a, InputDefault b, InputDefault c)
+   => InputDefault (a, b, c)
+   where
+   inputDefault = divide (\(a, b, c) -> (a, (b, c))) inputDefault inputDefault
+   {-# INLINE inputDefault #-}
+
+instance
+   (InputDefault a, InputDefault b, InputDefault c, InputDefault d)
+   => InputDefault (a, b, c, d)
+   where
+   inputDefault =
+      divide (\(a, b, c, d) -> (a, (b, c, d))) inputDefault inputDefault
+   {-# INLINE inputDefault #-}
+
+instance
+   (InputDefault a, InputDefault b, InputDefault c, InputDefault d, InputDefault e)
+   => InputDefault (a, b, c, d, e)
+   where
+   inputDefault =
+      divide (\(a, b, c, d, e) -> (a, (b, c, d, e))) inputDefault inputDefault
+   {-# INLINE inputDefault #-}
+
+instance (InputDefault a, InputDefault b) => InputDefault (Either a b) where
+   inputDefault = choose id inputDefault inputDefault
+   {-# INLINE inputDefault #-}
+
+-- | Read "Data.SOP".
+instance
+   (SOP.SListI2 xss, SOP.All2 InputDefault xss)
+   => InputDefault (SOP.SOP SOP.I xss)
+   where
+   inputDefault = hinputDefault
+   {-# INLINE inputDefault #-}
+
+-- | Read "Data.SOP".
+instance
+   (SOP.SListI2 xss, SOP.All2 InputDefault xss)
+   => InputDefault (SOP.POP SOP.I xss)
+   where
+   inputDefault = hinputDefault
+   {-# INLINE inputDefault #-}
+
+-- | Read "Data.SOP".
+instance
+   (SOP.SListI xs, SOP.All InputDefault xs)
+   => InputDefault (SOP.NP SOP.I xs)
+   where
+   inputDefault = hinputDefault
+   {-# INLINE inputDefault #-}
+
+-- | Read "Data.SOP".
+instance
+   (SOP.SListI xs, SOP.All InputDefault xs)
+   => InputDefault (SOP.NS SOP.I xs)
+   where
+   inputDefault = hinputDefault
+   {-# INLINE inputDefault #-}
