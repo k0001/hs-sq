@@ -12,6 +12,7 @@
 * Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`,
   and for `binary`'s `Put`.
 
+* Export `BindingName` constructor.
 
 # Version 0.0.2
 

@@ -21,6 +21,7 @@ import Data.Coerce
 import Data.Functor.Contravariant
 import Data.Functor.Contravariant.Divisible
 import Data.Functor.Contravariant.Rep
+import Data.List.NonEmpty qualified as NEL
 import Data.Map.Strict qualified as Map
 import Data.Profunctor
 import Data.SOP qualified as SOP
@@ -106,7 +107,7 @@ runInput = coerce
 --    => 'Sq.Statement' 'Sq.Write' (x, y) ()
 -- @
 encode :: Name -> Encode i -> Input i
-encode n (Encode f) = Input (Map.singleton (bindingName n) . f)
+encode n (Encode f) = Input (Map.singleton (BindingName (pure n)) . f)
 {-# INLINE encode #-}
 
 -- | Add a prefix 'Name' to parameters names in the given 'Input',
@@ -137,7 +138,7 @@ encode n (Encode f) = Input (Map.singleton (bindingName n) . f)
 -- @
 input :: Name -> Input i -> Input i
 input n ba = Input \s ->
-   Map.mapKeysMonotonic (bindingName n <>) (runInput ba s)
+   Map.mapKeysMonotonic (coerce (NEL.cons n)) (runInput ba s)
 {-# INLINE input #-}
 
 -- |

@@ -64,7 +64,7 @@ module Sq
    , input
    , hinput
    , HInput
-   , InputDefault(..)
+   , InputDefault (..)
 
     -- *** Encode
    , Encode (..)
@@ -86,7 +86,7 @@ module Sq
    , output
    , houtput
    , HOutput
-   , OutputDefault(..)
+   , OutputDefault (..)
 
     -- *** Decode
    , Decode (..)
@@ -105,6 +105,7 @@ module Sq
     -- ** Name
    , Name
    , name
+   , BindingName (..)
 
     -- * Transactional
    , Transactional
@@ -168,7 +169,6 @@ module Sq
 
     -- * Miscellaneuos
    , Retry (..)
-   , BindingName
    , Mode (..)
    , SubMode
    , Null (..)

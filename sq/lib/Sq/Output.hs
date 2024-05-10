@@ -8,13 +8,15 @@ module Sq.Output
    , output
    , houtput
    , HOutput
-   , OutputDefault(..)
+   , OutputDefault (..)
    ) where
 
 import Control.Applicative
 import Control.Exception.Safe qualified as Ex
 import Control.Monad
 import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
+import Data.Coerce
+import Data.List.NonEmpty qualified as NEL
 import Data.SOP qualified as SOP
 import Data.String
 import Database.SQLite3 qualified as S
@@ -100,7 +102,7 @@ data ErrOutput
 --    => 'Sq.Statement' 'Sq.Read' () (x, y)
 -- @
 decode :: Name -> Decode o -> Output o
-decode n vda = Output_Decode (bindingName n) (Output_Pure <$> vda)
+decode n vda = Output_Decode (BindingName (pure n)) (Output_Pure <$> vda)
 {-# INLINE decode #-}
 
 -- | Add a prefix 'Name' to column names in the given 'Output',
@@ -132,7 +134,7 @@ decode n vda = Output_Decode (bindingName n) (Output_Pure <$> vda)
 output :: Name -> Output o -> Output o
 output n = \case
    Output_Decode bn d ->
-      Output_Decode (bindingName n <> bn) (output n <$> d)
+      Output_Decode (coerce (NEL.cons n) bn) (output n <$> d)
    o -> o
 
 -- | TODO cache names after lookup. Important for Alternative.
