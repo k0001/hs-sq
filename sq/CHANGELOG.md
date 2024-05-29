@@ -12,6 +12,8 @@
 * Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`,
   and for `binary`'s `Put`.
 
+* Added `EncodeDefault` and `DecodeDefault` instances for `UUID`.
+
 * Export `BindingName` constructor.
 
 

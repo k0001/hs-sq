@@ -5,6 +5,7 @@
 , profunctors, ref-tf, resource-pool, resourcet, resourcet-extra
 , safe-exceptions, sop-core, stm, streaming, tasty, tasty-hedgehog
 , tasty-hunit, template-haskell, text, time, transformers
+, uuid-types
 }:
 mkDerivation {
   pname = "sq";
@@ -20,11 +21,11 @@ mkDerivation {
   testHaskellDepends = [
     aeson async base binary bytestring df1 di di-core hedgehog ref-tf
     resourcet resourcet-extra safe-exceptions sop-core tasty
-    tasty-hedgehog tasty-hunit text time
+    tasty-hedgehog tasty-hunit text time uuid-types
   ];
   benchmarkHaskellDepends = [
     async async-pool base containers criterion df1 di di-core resourcet
-    resourcet-extra safe-exceptions stm
+    resourcet-extra safe-exceptions stm uuid-types
   ];
   homepage = "https://github.com/k0001/hs-sq";
   description = "High-level SQLite client";

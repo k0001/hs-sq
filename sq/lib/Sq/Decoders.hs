@@ -37,6 +37,7 @@ import Data.Text.Unsafe qualified as T
 import Data.Time qualified as Time
 import Data.Time.Clock.POSIX qualified as Time
 import Data.Time.Format.ISO8601 qualified as Time
+import Data.UUID.Types qualified as UUID
 import Data.Word
 import Database.SQLite3 qualified as S
 import GHC.Float (double2Float, float2Double)
@@ -413,10 +414,17 @@ instance DecodeDefault Float where
          then Right f
          else Left "Lossy conversion from Double to Float"
 
+-- | 'S.TextColumn'.
+instance DecodeDefault UUID.UUID where
+   decodeDefault =
+      decodeRefine
+         (maybe (Left "Not valid UUID") Right . UUID.fromText)
+         decodeDefault
+
 --------------------------------------------------------------------------------
 
 -- @'decodeBinary'  =  'decodeBinary'' "Data.Binary".'Bin.get'@
-decodeBinary :: Bin.Binary a => Decode a
+decodeBinary :: (Bin.Binary a) => Decode a
 decodeBinary = decodeBinary' Bin.get
 {-# INLINE decodeBinary #-}
 

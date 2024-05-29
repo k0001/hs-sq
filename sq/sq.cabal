@@ -85,6 +85,7 @@ library
     text,
     time,
     transformers,
+    uuid-types,
 
 test-suite test
   import: basic
@@ -115,6 +116,7 @@ test-suite test
     tasty-hunit,
     text,
     time,
+    uuid-types,
 
 benchmark bench
   import: basic

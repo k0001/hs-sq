@@ -40,6 +40,7 @@ import Data.Text.Lazy.Builder qualified as TB
 import Data.Text.Lazy.Encoding qualified as TL
 import Data.Time qualified as Time
 import Data.Time.Format.ISO8601 qualified as Time
+import Data.UUID.Types qualified as UUID
 import Data.Void
 import Data.Word
 import Database.SQLite3 qualified as S
@@ -400,6 +401,10 @@ instance EncodeDefault Time.CalendarDiffTime where
 -- @±hh:mm@
 instance EncodeDefault Time.TimeZone where
    encodeDefault = Time.iso8601Show >$< encodeDefault
+
+-- | 'S.TextColumn'.
+instance EncodeDefault UUID.UUID where
+   encodeDefault = UUID.toText >$< encodeDefault
 
 -- | See @'encodeAeson' 'Left'@.
 instance EncodeDefault Ae.Encoding where

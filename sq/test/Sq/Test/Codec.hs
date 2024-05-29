@@ -17,6 +17,7 @@ import Data.Time qualified as Time
 import Data.Time.Clock.POSIX qualified as Time
 import Data.Time.Format.ISO8601 qualified as Time
 import Data.Typeable
+import Data.UUID.Types qualified as UUID
 import Data.Word
 import Hedgehog qualified as H
 import Hedgehog.Gen qualified as H
@@ -34,6 +35,7 @@ tree iop =
    testGroup
       "decode . encode"
       [ t @Bool $ H.bool
+      , t @UUID.UUID uuid4
       , t @Int $ H.integral HR.constantBounded
       , t @Int8 $ H.integral HR.constantBounded
       , t @Int16 $ H.integral HR.constantBounded
@@ -131,6 +133,12 @@ idStatement =
       (Sq.input "a" (Sq.input "b" "c"))
       (Sq.output "x" (Sq.output "y" "z"))
       "SELECT $a__b__c AS x__y__z"
+
+uuid4 :: (H.MonadGen m) => m UUID.UUID
+uuid4 =
+   UUID.fromWords64
+      <$> H.integral HR.constantBounded
+      <*> H.integral HR.constantBounded
 
 maxNatural :: Natural
 maxNatural = 2 ^ (256 :: Int) - 1
