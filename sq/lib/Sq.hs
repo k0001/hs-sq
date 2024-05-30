@@ -180,6 +180,7 @@ module Sq
    , ErrOutput (..)
    , ErrStatement (..)
    , ErrRows (..)
+   , ErrTransaction (..)
 
     -- * Re-exports
    , S.SQLData (..)

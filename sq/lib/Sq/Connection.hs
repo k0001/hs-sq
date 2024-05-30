@@ -21,11 +21,11 @@ module Sq.Connection
    , savepointRelease
    , ErrRows (..)
    , ErrStatement (..)
+   , ErrTransaction (..)
    ) where
 
 import Control.Applicative
 import Control.Concurrent
-import Control.Concurrent.Async qualified as Async
 import Control.Concurrent.STM
 import Control.DeepSeq
 import Control.Exception.Safe qualified as Ex
@@ -54,9 +54,8 @@ import Database.SQLite3.Direct qualified as S (Database (..), Statement (..))
 import Di.Df1 qualified as Di
 import Foreign.C.Types (CInt (..))
 import Foreign.Marshal.Alloc (free, malloc)
-import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr)
+import Foreign.Ptr (FunPtr, Ptr, freeHaskellFunPtr, nullFunPtr, nullPtr)
 import Foreign.Storable
-import GHC.IO (unsafeUnmask)
 import GHC.Records
 import GHC.Show
 import Streaming qualified as Z
@@ -163,6 +162,9 @@ connection smode di0 s = do
 -- 'S.Database' connection handle at the moment.
 data ExclusiveConnection (mode :: Mode) = ExclusiveConnection
    { id :: ConnectionId
+   , txint :: IORef (Maybe Bool)
+   -- ^ 'Nothing' if no transaction has started,
+   -- 'True' if the previously started transaction was interrupted.
    , run :: forall x. (S.Database -> IO x) -> IO x
    , statements :: IORef (Map SQL PreparedStatement)
    }
@@ -194,12 +196,6 @@ lockConnection c =
       )
       (atomically . void . tryPutTMVar c.xconn . Just)
 
-data DatabaseMessage
-   = forall x.
-      DatabaseMessage
-      (S.Database -> IO x)
-      (Either Ex.SomeException x -> IO ())
-
 warningOnException
    :: (MonadIO m, Ex.MonadMask m)
    => Di.Df1
@@ -216,63 +212,63 @@ exclusiveConnection
 exclusiveConnection smode di0 cs = do
    cId :: ConnectionId <- newConnectionId
    let di1 = Di.attr "connection-mode" smode $ Di.attr "connection" cId di0
-   dms :: MVar DatabaseMessage <-
-      R.mkAcquire1 newEmptyMVar (fmap (const ()) . tryTakeMVar)
-   abackground :: Async.Async () <-
+   db :: S.Database <-
       R.mkAcquire1
-         (Async.async (background di1 (takeMVar dms)))
-         Async.uninterruptibleCancel
-   -- TODO:  Async.link should be sufficient. Figure out what I'm doing wrong.
-   liftIO $ flip Async.linkOnly abackground \se ->
-      Just Async.AsyncCancelled == Ex.fromException se
+         ( do
+            let di2 = Di.push "connect" di1
+            db <- warningOnException di2 do
+               S.open2 (T.pack cs.file) (modeFlags (fromSMode smode)) cs.vfs
+            Di.debug_ di2 "OK"
+            pure db
+         )
+         ( \db -> do
+            let di2 = Di.push "disconnect" di1
+            warningOnException di1 $ S.close db
+            Di.debug_ di2 "OK"
+         )
+   setBusyHandler db cs.timeout
+   liftIO $
+      traverse_
+         (S.exec db)
+         [ "PRAGMA synchronous=NORMAL"
+         , "PRAGMA journal_size_limit=67108864" -- 64 MiB
+         , "PRAGMA mmap_size=134217728" -- 128 MiB
+         , "PRAGMA cache_size=2000" -- 2000 pages
+         ]
    statements :: IORef (Map SQL PreparedStatement) <-
       R.mkAcquire1 (newIORef mempty) \r ->
          atomicModifyIORef' r (mempty,) >>= traverse_ \ps ->
             Ex.tryAny (S.finalize ps.handle)
+   txint <- liftIO $ newIORef Nothing
+   runlock <- R.mkAcquire1 (newMVar ()) takeMVar
    pure
       ( di1
       , ExclusiveConnection
          { statements
+         , txint
          , id = cId
-         , run = \ !act -> do
-            mv <- newEmptyMVar
-            putMVar dms $! DatabaseMessage act $ putMVar mv
-            takeMVar mv >>= either Ex.throwM pure
+         , run = \act -> withMVar runlock \() -> Ex.mask \restore -> do
+            mx <- newEmptyMVar
+            th <- forkIO $ Ex.tryAsync (restore (act db)) >>= putMVar mx
+            Ex.tryAsync (takeMVar mx) >>= \case
+               Right (Right x) -> pure x
+               Right (Left (se :: Ex.SomeException)) -> Ex.throwM se
+               Left (se :: Ex.SomeException) -> do
+                  when (Ex.isAsyncException se) do
+                     Ex.catchAsync
+                        ( Ex.uninterruptibleMask_ do
+                           -- We deal with txint later during Transaction release
+                           atomicModifyIORef' txint \case
+                              Nothing -> (Nothing, ())
+                              Just _ -> (Just True, ())
+                           S.interrupt db
+                           killThread th
+                           void $ takeMVar mx
+                        )
+                        (\(_ :: Ex.SomeException) -> pure ())
+                  Ex.throwM se
          }
       )
-  where
-   background :: forall x. Di.Df1 -> IO DatabaseMessage -> IO x
-   background di1 next = R.runResourceT do
-      (_, db) <-
-         R.allocate
-            ( do
-               let di2 = Di.push "connect" di1
-               db <- warningOnException di2 do
-                  S.open2 (T.pack cs.file) (modeFlags (fromSMode smode)) cs.vfs
-               Di.debug_ di2 "OK"
-               pure db
-            )
-            ( \db -> do
-               let di2 = Di.push "disconnect" di1
-               warningOnException di1 do
-                  Ex.finally
-                     (Ex.uninterruptibleMask_ (S.interrupt db))
-                     (S.close db)
-               Di.debug_ di2 "OK"
-            )
-      warningOnException (Di.push "set-busy-handler" di1) do
-         setBusyHandler db cs.timeout
-      liftIO $
-         traverse_
-            (S.exec db)
-            [ "PRAGMA synchronous=NORMAL"
-            , "PRAGMA journal_size_limit=67108864" -- 64 MiB
-            , "PRAGMA mmap_size=134217728" -- 128 MiB
-            , "PRAGMA cache_size=2000" -- 2000 pages
-            ]
-      liftIO $ forever do
-         DatabaseMessage act res <- next
-         Ex.try (unsafeUnmask (act db)) >>= res
 
 --------------------------------------------------------------------------------
 
@@ -283,6 +279,16 @@ foreign import ccall unsafe "sqlite3_busy_handler"
       -> FunPtr (Ptr a -> CInt -> IO CInt)
       -> Ptr a
       -> IO CInt
+
+c_sqlite3_busy_handler'
+   :: Ptr S.CDatabase
+   -> FunPtr (Ptr a -> CInt -> IO CInt)
+   -> Ptr a
+   -> IO ()
+c_sqlite3_busy_handler' pDB pF pX = do
+   n <- c_sqlite3_busy_handler pDB pF pX
+   when (n /= 0) do
+      Ex.throwString $ "sqlite3_busy_handler: return " <> show n
 
 -- | Returns same as input.
 foreign import ccall safe "sqlite3_sleep"
@@ -296,14 +302,13 @@ foreign import ccall "wrapper"
       :: (Ptr Clock.TimeSpec -> CInt -> IO CInt)
       -> IO (FunPtr (Ptr Clock.TimeSpec -> CInt -> IO CInt))
 
-setBusyHandler :: (R.MonadResource m) => S.Database -> Word32 -> m ()
+setBusyHandler :: S.Database -> Word32 -> A.Acquire ()
 setBusyHandler (S.Database pDB) tmaxMS = do
-   (_, pHandler) <- R.allocate (createBusyHandlerPtr handler) freeHaskellFunPtr
-   (_, pTimeSpec) <- R.allocate malloc free
-   liftIO do
-      n <- c_sqlite3_busy_handler pDB pHandler pTimeSpec
-      when (n /= 0) do
-         Ex.throwString $ "sqlite3_busy_handler: return " <> show n
+   pHandler <- R.mkAcquire1 (createBusyHandlerPtr handler) freeHaskellFunPtr
+   pTimeSpec <- R.mkAcquire1 malloc free
+   R.mkAcquire1
+      (c_sqlite3_busy_handler' pDB pHandler pTimeSpec)
+      (\_ -> c_sqlite3_busy_handler' pDB nullFunPtr nullPtr)
   where
    tmaxNS :: Integer
    !tmaxNS = fromIntegral tmaxMS * 1_000_000
@@ -377,15 +382,29 @@ connectionReadTransaction c = do
    R.mkAcquireType1
       ( do
          let di2 = Di.push "begin" di1
-         warningOnException di2 $ run xc (flip S.exec "BEGIN DEFERRED")
-         Di.debug_ di2 "OK"
+         warningOnException di2 do
+            readIORef xc.txint >>= \case
+               Nothing -> pure ()
+               _ -> Ex.throwString "Nested transaction. Should never happen."
+            run xc (flip S.exec "BEGIN DEFERRED")
+            atomicWriteIORef xc.txint $ Just False
+            Di.debug_ di2 "OK"
       )
       ( \_ rt -> do
          let di2 = Di.push "rollback" di1
-         for_ (releaseTypeException rt) \e ->
-            Di.notice di2 $ "Will rollback due to: " <> show e
-         warningOnException di2 $ run xc (flip S.exec "ROLLBACK")
-         Di.debug_ di2 "OK"
+         warningOnException di2 do
+            readIORef xc.txint >>= \case
+               Just False -> do
+                  for_ (releaseTypeException rt) \e ->
+                     Di.notice di2 $ "Will rollback due to: " <> show e
+                  run xc (flip S.exec "ROLLBACK")
+                  atomicWriteIORef xc.txint Nothing
+                  Di.debug_ di2 "OK"
+               Just True -> do
+                  atomicWriteIORef xc.txint Nothing
+                  Di.info_ di2 "Previously interrupted, no need to rollback"
+               Nothing ->
+                  Ex.throwString "No transaction. Should never happen."
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
@@ -412,21 +431,43 @@ connectionWriteTransaction commit c = do
             Di.attr "transaction" tId c.di
        rollback (ye :: Maybe Ex.SomeException) = do
          let di2 = Di.push "rollback" di1
-         for_ ye \e -> Di.notice di2 $ "Will rollback due to: " <> show e
-         warningOnException di2 $ run xc (flip S.exec "ROLLBACK")
-         Di.debug_ di2 "OK"
+         warningOnException di2 do
+            readIORef xc.txint >>= \case
+               Just False -> do
+                  for_ ye \e ->
+                     Di.notice di2 $ "Will rollback due to: " <> show e
+                  run xc (flip S.exec "ROLLBACK")
+                  atomicWriteIORef xc.txint Nothing
+                  Di.debug_ di2 "OK"
+               Just True -> do
+                  atomicWriteIORef xc.txint Nothing
+                  Di.info_ di2 "Previously interrupted, no need to rollback"
+               Nothing ->
+                  Ex.throwString "No transaction. Should never happen."
    R.mkAcquireType1
       ( do
          let di2 = Di.push "begin" di1
-         warningOnException di2 $ run xc (flip S.exec "BEGIN IMMEDIATE")
-         Di.debug_ di2 "OK"
+         warningOnException di2 do
+            readIORef xc.txint >>= \case
+               Nothing -> pure ()
+               _ -> Ex.throwString "Nested transaction. Should never happen."
+            run xc (flip S.exec "BEGIN IMMEDIATE")
+            atomicWriteIORef xc.txint $ Just False
+            Di.debug_ di2 "OK"
       )
       ( \_ rt -> case releaseTypeException rt of
          Nothing
             | commit -> do
                let di2 = Di.push "commit" di1
-               warningOnException di2 $ run xc (flip S.exec "COMMIT")
-               Di.debug_ di2 "OK"
+               warningOnException di2 do
+                  readIORef xc.txint >>= \case
+                     Just False -> do
+                        run xc (flip S.exec "COMMIT")
+                        atomicWriteIORef xc.txint Nothing
+                        Di.debug_ di2 "OK"
+                     Just True -> Ex.throwM ErrTransaction_Interrupted
+                     Nothing ->
+                        Ex.throwString "No transaction. Should never happen."
             | otherwise -> rollback Nothing
          Just e -> rollback (Just e)
       )
@@ -440,6 +481,17 @@ connectionWriteTransaction commit c = do
          , commit
          , smode = SWrite
          }
+
+data ErrTransaction
+   = -- | A the database connection was 'S.interrupt'ed but a @COMMIT@ is still
+     -- pending.
+     --
+     -- This exception happens if you swallowed an asynchronous exception
+     -- before releasing a 'Write' 'Transaction'. Just don't do that.  Make
+     -- sure the 'Transaction' is released through 'A.ReleaseExceptionWith'.
+     ErrTransaction_Interrupted
+   deriving stock (Eq, Show)
+   deriving anyclass (Ex.Exception)
 
 --------------------------------------------------------------------------------
 

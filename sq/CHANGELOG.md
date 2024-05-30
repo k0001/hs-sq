@@ -16,6 +16,10 @@
 
 * Export `BindingName` constructor.
 
+* Export `ErrTransaction`.
+
+* Improved asynchronous exception handling.
+
 
 # Version 0.0.2
 

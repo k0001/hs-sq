@@ -57,7 +57,6 @@ library
   build-depends:
     adjunctions,
     aeson,
-    async,
     attoparsec,
     binary,
     bytestring,
