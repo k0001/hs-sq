@@ -282,7 +282,10 @@ uith = A.with
 tempPool :: Di.Df1 -> A.Acquire (Pool Write)
 tempPool di0 = do
    d <- acquireTmpDir
-   pool SWrite (Di.push "sq" di0) $ settings (d </> "db.sqlite")
+   let path = d </> "db.sqlite"
+       di1 = Di.push "sq" di0
+   Di.notice di1 $ "Using temporary database: " <> show path
+   pool SWrite di1 $ settings path
 
 -- | Acquire a read-'Write' 'Pool' according to the given 'Settings'.
 --
