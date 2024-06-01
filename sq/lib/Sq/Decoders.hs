@@ -21,6 +21,8 @@ import Control.Monad.Catch qualified as Ex (MonadThrow (..))
 import Control.Monad.Trans.Reader
 import Data.Aeson qualified as Ae
 import Data.Aeson.Types qualified as Ae
+import Data.Attoparsec.Text qualified as AT
+import Data.Attoparsec.Time qualified as AT8601
 import Data.Bifunctor
 import Data.Binary qualified as Bin
 import Data.Binary.Get qualified as Bin
@@ -28,6 +30,7 @@ import Data.Bits
 import Data.ByteString qualified as B
 import Data.ByteString.Builder.Prim.Internal (caseWordSize_32_64)
 import Data.ByteString.Lazy qualified as BL
+import Data.Fixed
 import Data.Int
 import Data.Proxy
 import Data.SOP qualified as SOP
@@ -36,6 +39,7 @@ import Data.Text.Lazy qualified as TL
 import Data.Text.Unsafe qualified as T
 import Data.Time qualified as Time
 import Data.Time.Clock.POSIX qualified as Time
+
 import Data.Time.Format.ISO8601 qualified as Time
 import Data.UUID.Types qualified as UUID
 import Data.Word
@@ -216,12 +220,13 @@ instance (DecodeDefault a) => DecodeDefault (Maybe a) where
    decodeDefault = decodeMaybe decodeDefault
    {-# INLINE decodeDefault #-}
 
--- | Attempt to decode a 'S.NullColumn' as 'Nothing' firsrt,
--- otherwise attempt to decode @a@.
+-- | Attempt to decode @a@ first, or a 'S.NullColumn' as 'Nothing' otherwise.
 decodeMaybe :: Decode a -> Decode (Maybe a)
-decodeMaybe (Decode fa) = Decode \case
-   S.SQLNull -> Right Nothing
-   d -> Just <$> fa d
+decodeMaybe (Decode fa) = Decode \d -> case fa d of
+   Right a -> Right (Just a)
+   Left e -> case d of
+      S.SQLNull -> Right Nothing
+      _ -> Left e
 
 -- | See 'decodeEither'.
 instance
@@ -372,14 +377,10 @@ instance DecodeDefault Time.ZonedTime where
    decodeDefault =
       {-# SCC "decodeDefault/ZonedTime" #-}
       ( Decode \case
-         S.SQLText (T.unpack -> s)
-            | Just zt <- Time.iso8601ParseM s -> Right zt
-            | Just u <- Time.iso8601ParseM s ->
-               Right $ Time.utcToZonedTime Time.utc u
-            | Just u <- Time.parseTimeM False Time.defaultTimeLocale "%s%Q" s ->
-               Right $ Time.utcToZonedTime Time.utc u
-            | otherwise -> first ErrDecode_Fail do
-               Ex.throwString $ "Invalid timestamp: " <> show s
+         S.SQLText t -> case AT.parseOnly pzt t of
+            Right zt -> Right zt
+            Left e -> first ErrDecode_Fail do
+               Ex.throwString $ "Invalid timestamp: " <> show e
          S.SQLInteger i ->
             Right $
                Time.utcToZonedTime Time.utc $
@@ -391,20 +392,36 @@ instance DecodeDefault Time.ZonedTime where
                   (sqlDataColumnType x)
                   [S.IntegerColumn, S.TextColumn]
       )
+     where
+      pzt =
+         mplus
+            ({-# SCC zonedTime #-} AT8601.zonedTime <* AT.endOfInput)
+            ({-# SCC psecs #-} psecs <* AT.endOfInput)
+      psecs = do
+         s <- AT.scientific
+         let pico :: Pico = MkFixed $ floor (s * 1_000_000_000_000)
+             ndt :: Time.NominalDiffTime = Time.secondsToNominalDiffTime pico
+         pure $ Time.utcToZonedTime Time.utc $ Time.posixSecondsToUTCTime ndt
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 instance DecodeDefault Time.LocalTime where
    {-# INLINE decodeDefault #-}
    decodeDefault =
       {-# SCC "decodeDefault/LocalTime" #-}
-      (decodeDefault >>= Time.iso8601ParseM)
+      ( decodeRefine
+         (AT.parseOnly (AT8601.localTime <* AT.endOfInput))
+         decodeDefault
+      )
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 instance DecodeDefault Time.Day where
    {-# INLINE decodeDefault #-}
    decodeDefault =
       {-# SCC "decodeDefault/Day" #-}
-      (decodeDefault >>= Time.iso8601ParseM)
+      ( decodeRefine
+         (AT.parseOnly (AT8601.day <* AT.endOfInput))
+         decodeDefault
+      )
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 --
@@ -414,7 +431,10 @@ instance DecodeDefault Time.TimeOfDay where
    {-# INLINE decodeDefault #-}
    decodeDefault =
       {-# SCC "decodeDefault/TimeOfDay" #-}
-      (decodeDefault >>= Time.iso8601ParseM)
+      ( decodeRefine
+         (AT.parseOnly (AT8601.timeOfDay <* AT.endOfInput))
+         decodeDefault
+      )
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 --
@@ -441,7 +461,12 @@ instance DecodeDefault Time.TimeZone where
    {-# INLINE decodeDefault #-}
    decodeDefault =
       {-# SCC "decodeDefault/TimeZone" #-}
-      (decodeDefault >>= Time.iso8601ParseM)
+      ( flip decodeRefine decodeDefault \t ->
+         case AT.parseOnly (AT8601.timeZone <* AT.endOfInput) t of
+            Right (Just tz) -> Right tz
+            Right Nothing -> Left "Not a valid time zone"
+            Left s -> Left ("Not a valid time zone: " <> show s)
+      )
 
 -- | 'S.FloatColumn'.
 instance DecodeDefault Float where

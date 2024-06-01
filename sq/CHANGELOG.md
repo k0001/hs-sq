@@ -20,6 +20,9 @@
 
 * Improved asynchronous exception handling.
 
+* Faster `ZonedTime`, `UTCTime`, `LocalTime`, `TimeZone`, `Day` and `TimeOfDay`
+  parsing via `attoparsec-iso8601`
+
 
 # Version 0.0.2
 

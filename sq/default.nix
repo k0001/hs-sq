@@ -1,22 +1,23 @@
 { mkDerivation, adjunctions, aeson, async, async-pool, attoparsec
-, base, binary, bytestring, clock, containers, contravariant
-, criterion, deepseq, df1, di, di-core, di-df1, direct-sqlite
-, directory, exceptions, filepath, foldl, hedgehog, lib
-, profunctors, ref-tf, resource-pool, resourcet, resourcet-extra
-, safe-exceptions, sop-core, stm, streaming, tasty, tasty-hedgehog
-, tasty-hunit, template-haskell, text, time, transformers
-, uuid-types
+, attoparsec-iso8601, base, binary, bytestring, clock, containers
+, contravariant, criterion, deepseq, df1, di, di-core, di-df1
+, direct-sqlite, directory, exceptions, filepath, foldl, hedgehog
+, lib, profunctors, ref-tf, resource-pool, resourcet
+, resourcet-extra, safe-exceptions, sop-core, stm, streaming, tasty
+, tasty-hedgehog, tasty-hunit, template-haskell, text, time
+, transformers, uuid-types
 }:
 mkDerivation {
   pname = "sq";
   version = "0.1";
   src = ./.;
   libraryHaskellDepends = [
-    adjunctions aeson attoparsec base binary bytestring clock
-    containers contravariant deepseq di-core di-df1 direct-sqlite
-    directory exceptions filepath foldl profunctors ref-tf
-    resource-pool resourcet resourcet-extra safe-exceptions sop-core
-    stm streaming template-haskell text time transformers uuid-types
+    adjunctions aeson attoparsec attoparsec-iso8601 base binary
+    bytestring clock containers contravariant deepseq di-core di-df1
+    direct-sqlite directory exceptions filepath foldl profunctors
+    ref-tf resource-pool resourcet resourcet-extra safe-exceptions
+    sop-core stm streaming template-haskell text time transformers
+    uuid-types
   ];
   testHaskellDepends = [
     aeson async base binary bytestring df1 di di-core hedgehog ref-tf

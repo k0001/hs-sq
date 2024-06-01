@@ -58,6 +58,7 @@ library
     adjunctions,
     aeson,
     attoparsec,
+    attoparsec-iso8601,
     binary,
     bytestring,
     clock,
