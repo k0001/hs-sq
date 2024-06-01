@@ -144,30 +144,35 @@ instance DecodeDefault S.SQLData where
 
 -- | 'S.IntegerColumn'.
 instance DecodeDefault Int64 where
+   {-# INLINE decodeDefault #-}
    decodeDefault = Decode \case
       S.SQLInteger x -> Right x
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.IntegerColumn]
 
 -- | 'S.FloatColumn'.
 instance DecodeDefault Double where
+   {-# INLINE decodeDefault #-}
    decodeDefault = Decode \case
       S.SQLFloat x -> Right x
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.FloatColumn]
 
 -- | 'S.TextColumn'.
 instance DecodeDefault T.Text where
+   {-# INLINE decodeDefault #-}
    decodeDefault = Decode \case
       S.SQLText x -> Right x
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.TextColumn]
 
 -- | 'S.BlobColumn'.
 instance DecodeDefault B.ByteString where
+   {-# INLINE decodeDefault #-}
    decodeDefault = Decode \case
       S.SQLBlob x -> Right x
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.BlobColumn]
 
 -- | 'S.NullColumn'.
 instance DecodeDefault Null where
+   {-# INLINE decodeDefault #-}
    decodeDefault = Decode \case
       S.SQLNull -> Right mempty
       x -> Left $ ErrDecode_Type (sqlDataColumnType x) [S.NullColumn]
@@ -177,36 +182,46 @@ instance DecodeDefault Null where
 
 -- | 'S.TextColumn'.
 instance DecodeDefault TL.Text where
-   decodeDefault = TL.fromStrict <$> decodeDefault
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/TextLazy" #-}
+      (TL.fromStrict <$> decodeDefault)
 
 -- | 'S.TextColumn'.
 instance DecodeDefault Char where
-   decodeDefault = flip decodeRefine decodeDefault \t ->
-      if T.length t == 1
-         then Right (T.unsafeHead t)
-         else Left "Expected single character string"
+   decodeDefault =
+      {-# SCC "decodeDefault/Char" #-}
+      ( flip decodeRefine decodeDefault \t ->
+         if T.length t == 1
+            then Right (T.unsafeHead t)
+            else Left "Expected single character string"
+      )
 
 -- | 'S.TextColumn'.
 instance DecodeDefault String where
-   decodeDefault = T.unpack <$> decodeDefault
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/String" #-}
+      (T.unpack <$> decodeDefault)
 
 -- | 'S.BlobColumn'.
 instance DecodeDefault BL.ByteString where
-   decodeDefault = BL.fromStrict <$> decodeDefault
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/ByteStringLazy" #-}
+      (BL.fromStrict <$> decodeDefault)
 
 -- | See 'decodeMaybe'.
 instance (DecodeDefault a) => DecodeDefault (Maybe a) where
    decodeDefault = decodeMaybe decodeDefault
    {-# INLINE decodeDefault #-}
 
--- | Attempt to decode @a@ first, otherwise attempt decode
--- a 'S.NullColumn' as 'Nothing'.
+-- | Attempt to decode a 'S.NullColumn' as 'Nothing' firsrt,
+-- otherwise attempt to decode @a@.
 decodeMaybe :: Decode a -> Decode (Maybe a)
-decodeMaybe da = fmap Just da <|> fmap (\_ -> Nothing) (decodeDefault @Null)
-{-# INLINE decodeMaybe #-}
+decodeMaybe (Decode fa) = Decode \case
+   S.SQLNull -> Right Nothing
+   d -> Just <$> fa d
 
 -- | See 'decodeEither'.
 instance
@@ -225,16 +240,16 @@ instance
 -- between @a@ and @b@.
 decodeEither :: Decode a -> Decode b -> Decode (Either a b)
 decodeEither da db = fmap Left da <|> fmap Right db
-{-# INLINE decodeEither #-}
 
 -- | See 'decodeNS'.
 instance
    (SOP.All DecodeDefault xs)
    => DecodeDefault (SOP.NS SOP.I xs)
    where
-   decodeDefault =
-      decodeNS (SOP.hcpure (Proxy @DecodeDefault) decodeDefault)
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/SOP.NS" #-}
+      decodeNS (SOP.hcpure (Proxy @DecodeDefault) decodeDefault)
 
 -- | Like 'decodeEither', but for arbitraryly large "Data.SOP".'NS' sums.
 --
@@ -242,25 +257,27 @@ instance
 -- 'S.SQLData' doesn't carry any /tag/ for discriminating among @xs@.
 decodeNS :: SOP.NP Decode xs -> Decode (SOP.NS SOP.I xs)
 decodeNS = hasum
-{-# INLINE decodeNS #-}
 
 -- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'
 -- depicting a literal integer.
 instance DecodeDefault Integer where
-   decodeDefault = Decode \case
-      S.SQLInteger i -> Right (fromIntegral i)
-      S.SQLFloat d
-         | not (isNaN d || isInfinite d)
-         , (i, 0) <- properFraction d ->
-            Right i
-         | otherwise -> first ErrDecode_Fail do
-            Ex.throwString "Not an integer"
-      S.SQLText t
-         | Just i <- readMaybe (T.unpack t) -> Right i
-         | otherwise -> first ErrDecode_Fail do
-            Ex.throwString "Not an integer"
-      x -> Left $ ErrDecode_Type (sqlDataColumnType x) do
-         [S.IntegerColumn, S.FloatColumn, S.TextColumn]
+   decodeDefault =
+      {-# SCC "decodeDefault/Integer" #-}
+      ( Decode \case
+         S.SQLInteger i -> Right (fromIntegral i)
+         S.SQLFloat d
+            | not (isNaN d || isInfinite d)
+            , (i, 0) <- properFraction d ->
+               Right i
+            | otherwise -> first ErrDecode_Fail do
+               Ex.throwString "Not an integer"
+         S.SQLText t
+            | Just i <- readMaybe (T.unpack t) -> Right i
+            | otherwise -> first ErrDecode_Fail do
+               Ex.throwString "Not an integer"
+         x -> Left $ ErrDecode_Type (sqlDataColumnType x) do
+            [S.IntegerColumn, S.FloatColumn, S.TextColumn]
+      )
 
 -- | 'S.IntegerColumn'.
 decodeSizedIntegral :: (Integral a, Bits a) => Decode a
@@ -327,19 +344,24 @@ instance DecodeDefault Natural where
 --
 -- @0@ is 'False', every other number is 'True'.
 instance DecodeDefault Bool where
-   decodeDefault = Decode \case
-      S.SQLInteger x -> Right (x /= 0)
-      S.SQLFloat x -> Right (x /= 0)
-      x ->
-         Left $
-            ErrDecode_Type
-               (sqlDataColumnType x)
-               [S.IntegerColumn, S.FloatColumn]
+   decodeDefault =
+      {-# SCC "decodeDefault/Bool" #-}
+      ( Decode \case
+         S.SQLInteger x -> Right (x /= 0)
+         S.SQLFloat x -> Right (x /= 0)
+         x ->
+            Left $
+               ErrDecode_Type
+                  (sqlDataColumnType x)
+                  [S.IntegerColumn, S.FloatColumn]
+      )
 
 -- | Like for 'Time.ZonedTime'.
 instance DecodeDefault Time.UTCTime where
-   decodeDefault = Time.zonedTimeToUTC <$> decodeDefault
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/UTCTime" #-}
+      (Time.zonedTimeToUTC <$> decodeDefault)
 
 -- | 'S.TextColumn' ('Time.ISO8601', or seconds since Epoch with optional decimal
 -- part of up to picosecond precission), or 'S.Integer' (seconds since Epoch).
@@ -347,86 +369,105 @@ instance DecodeDefault Time.UTCTime where
 -- TODO: Currently precission over picoseconds is successfully parsed but
 -- silently floored. This is an issue in "Data.Time.Format.ISO8601". Fix.
 instance DecodeDefault Time.ZonedTime where
-   decodeDefault = Decode \case
-      S.SQLText (T.unpack -> s)
-         | Just zt <- Time.iso8601ParseM s -> Right zt
-         | Just u <- Time.iso8601ParseM s ->
-            Right $ Time.utcToZonedTime Time.utc u
-         | Just u <- Time.parseTimeM False Time.defaultTimeLocale "%s%Q" s ->
-            Right $ Time.utcToZonedTime Time.utc u
-         | otherwise -> first ErrDecode_Fail do
-            Ex.throwString $ "Invalid timestamp: " <> show s
-      S.SQLInteger i ->
-         Right $
-            Time.utcToZonedTime Time.utc $
-               Time.posixSecondsToUTCTime $
-                  fromIntegral i
-      x ->
-         Left $
-            ErrDecode_Type
-               (sqlDataColumnType x)
-               [S.IntegerColumn, S.TextColumn]
+   decodeDefault =
+      {-# SCC "decodeDefault/ZonedTime" #-}
+      ( Decode \case
+         S.SQLText (T.unpack -> s)
+            | Just zt <- Time.iso8601ParseM s -> Right zt
+            | Just u <- Time.iso8601ParseM s ->
+               Right $ Time.utcToZonedTime Time.utc u
+            | Just u <- Time.parseTimeM False Time.defaultTimeLocale "%s%Q" s ->
+               Right $ Time.utcToZonedTime Time.utc u
+            | otherwise -> first ErrDecode_Fail do
+               Ex.throwString $ "Invalid timestamp: " <> show s
+         S.SQLInteger i ->
+            Right $
+               Time.utcToZonedTime Time.utc $
+                  Time.posixSecondsToUTCTime $
+                     fromIntegral i
+         x ->
+            Left $
+               ErrDecode_Type
+                  (sqlDataColumnType x)
+                  [S.IntegerColumn, S.TextColumn]
+      )
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 instance DecodeDefault Time.LocalTime where
-   decodeDefault = decodeDefault >>= Time.iso8601ParseM
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/LocalTime" #-}
+      (decodeDefault >>= Time.iso8601ParseM)
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 instance DecodeDefault Time.Day where
-   decodeDefault = decodeDefault >>= Time.iso8601ParseM
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/Day" #-}
+      (decodeDefault >>= Time.iso8601ParseM)
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 --
 -- TODO: Currently precission over picoseconds is successfully parsed but
 -- silently floored. This is an issue in "Data.Time.Format.ISO8601". Fix.
 instance DecodeDefault Time.TimeOfDay where
-   decodeDefault = decodeDefault >>= Time.iso8601ParseM
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/TimeOfDay" #-}
+      (decodeDefault >>= Time.iso8601ParseM)
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 --
 -- TODO: Currently precission over picoseconds is successfully parsed but
 -- silently floored. This is an issue in "Data.Time.Format.ISO8601". Fix.
 instance DecodeDefault Time.CalendarDiffDays where
-   decodeDefault = decodeDefault >>= Time.iso8601ParseM
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/CalendarDiffDays" #-}
+      (decodeDefault >>= Time.iso8601ParseM)
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 --
 -- TODO: Currently precission over picoseconds is successfully parsed but
 -- silently floored. This is an issue in "Data.Time.Format.ISO8601". Fix.
 instance DecodeDefault Time.CalendarDiffTime where
-   decodeDefault = decodeDefault >>= Time.iso8601ParseM
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/CalendarDiffTime" #-}
+      (decodeDefault >>= Time.iso8601ParseM)
 
 -- | 'Time.ISO8601' in a @'S.TextColumn'.
 instance DecodeDefault Time.TimeZone where
-   decodeDefault = decodeDefault >>= Time.iso8601ParseM
    {-# INLINE decodeDefault #-}
+   decodeDefault =
+      {-# SCC "decodeDefault/TimeZone" #-}
+      (decodeDefault >>= Time.iso8601ParseM)
 
 -- | 'S.FloatColumn'.
 instance DecodeDefault Float where
-   decodeDefault = flip decodeRefine decodeDefault \d -> do
-      let f = double2Float d
-      if float2Double f == d
-         then Right f
-         else Left "Lossy conversion from Double to Float"
+   decodeDefault =
+      {-# SCC "decodeDefault/Float" #-}
+      ( flip decodeRefine decodeDefault \d -> do
+         let f = double2Float d
+         if float2Double f == d
+            then Right f
+            else Left "Lossy conversion from Double to Float"
+      )
 
 -- | 'S.TextColumn'.
 instance DecodeDefault UUID.UUID where
    decodeDefault =
-      decodeRefine
+      {-# SCC "decodeDefault/UUID" #-}
+      ( decodeRefine
          (maybe (Left "Not valid UUID") Right . UUID.fromText)
          decodeDefault
+      )
 
 --------------------------------------------------------------------------------
 
 -- @'decodeBinary'  =  'decodeBinary'' "Data.Binary".'Bin.get'@
 decodeBinary :: (Bin.Binary a) => Decode a
 decodeBinary = decodeBinary' Bin.get
-{-# INLINE decodeBinary #-}
 
 -- | 'S.BlobColumn'.
 decodeBinary' :: Bin.Get a -> Decode a
@@ -438,12 +479,10 @@ decodeBinary' ga = flip decodeRefine (decodeDefault @BL.ByteString) \bl ->
 -- | 'S.TextColumn'.
 decodeRead :: (Prelude.Read a) => Decode a
 decodeRead = decodeRefine readEither (decodeDefault @String)
-{-# INLINE decodeRead #-}
 
 -- | @'decodeAeson' = 'decodeAeson'' "Data.Aeson".'Ae.parseJSON'@
 decodeAeson :: (Ae.FromJSON a) => Decode a
 decodeAeson = decodeAeson' Ae.parseJSON
-{-# INLINE decodeAeson #-}
 
 -- | 'S.TextColumn'.
 decodeAeson' :: (Ae.Value -> Ae.Parser a) -> Decode a
