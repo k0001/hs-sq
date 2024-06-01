@@ -194,7 +194,7 @@ lockConnection c =
             Just xc -> pure xc
             Nothing -> Ex.throwString "Timeout"
       )
-      (atomically . void . tryPutTMVar c.xconn . Just)
+      (atomically . putTMVar c.xconn . Just)
 
 warningOnException
    :: (MonadIO m, Ex.MonadMask m)
@@ -253,19 +253,14 @@ exclusiveConnection smode di0 cs = do
             Ex.tryAsync (takeMVar mx) >>= \case
                Right (Right x) -> pure x
                Right (Left (se :: Ex.SomeException)) -> Ex.throwM se
-               Left (se :: Ex.SomeException) -> do
+               Left (se :: Ex.SomeException) -> Ex.uninterruptibleMask_ do
                   when (Ex.isAsyncException se) do
-                     Ex.catchAsync
-                        ( Ex.uninterruptibleMask_ do
-                           -- We deal with txint later during Transaction release
-                           atomicModifyIORef' txint \case
-                              Nothing -> (Nothing, ())
-                              Just _ -> (Just True, ())
-                           S.interrupt db
-                           killThread th
-                           void $ takeMVar mx
-                        )
-                        (\(_ :: Ex.SomeException) -> pure ())
+                     void $ Ex.tryAny do
+                        S.interrupt db >> killThread th >> takeMVar mx
+                     -- We deal with txint later during tx release
+                     atomicModifyIORef' txint \case
+                        Nothing -> (Nothing, ())
+                        Just _ -> (Just True, ())
                   Ex.throwM se
          }
       )
@@ -379,33 +374,8 @@ connectionReadTransaction c = do
    xc <- lockConnection c
    tId <- newTransactionId
    let di1 = Di.attr "transaction-mode" Read $ Di.attr "transaction" tId c.di
-   R.mkAcquireType1
-      ( do
-         let di2 = Di.push "begin" di1
-         warningOnException di2 do
-            readIORef xc.txint >>= \case
-               Nothing -> pure ()
-               _ -> Ex.throwString "Nested transaction. Should never happen."
-            run xc (flip S.exec "BEGIN DEFERRED")
-            atomicWriteIORef xc.txint $ Just False
-            Di.debug_ di2 "OK"
-      )
-      ( \_ rt -> do
-         let di2 = Di.push "rollback" di1
-         warningOnException di2 do
-            readIORef xc.txint >>= \case
-               Just False -> do
-                  for_ (releaseTypeException rt) \e ->
-                     Di.notice di2 $ "Will rollback due to: " <> show e
-                  run xc (flip S.exec "ROLLBACK")
-                  atomicWriteIORef xc.txint Nothing
-                  Di.debug_ di2 "OK"
-               Just True -> do
-                  atomicWriteIORef xc.txint Nothing
-                  Di.info_ di2 "Previously interrupted, no need to rollback"
-               Nothing ->
-                  Ex.throwString "No transaction. Should never happen."
-      )
+   R.mkAcquireType1 (unsafeBegin di1 False xc) \_ rt ->
+      unsafeRollback di1 (releaseTypeException rt) xc
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
    pure $
@@ -416,6 +386,64 @@ connectionReadTransaction c = do
          , commit = False
          , smode = SRead
          }
+
+-- | Internal
+unsafeBegin
+   :: Di.Df1
+   -> Bool
+   -- ^ @IMMEDIATE@?
+   -> ExclusiveConnection c
+   -> IO ()
+unsafeBegin di0 im xc = do
+   let di1 = Di.push "begin" di0
+   warningOnException di1 do
+      readIORef xc.txint >>= \case
+         Nothing -> pure ()
+         _ -> Ex.throwString "Nested transaction. Should never happen."
+      run xc \db -> do
+         S.exec db $ "BEGIN " <> if im then "IMMEDIATE" else "DEFERRED"
+         atomicWriteIORef xc.txint $ Just False
+      Di.debug_ di1 "OK"
+
+-- | Internal
+unsafeCommit
+   :: Di.Df1
+   -> ExclusiveConnection c
+   -> IO ()
+unsafeCommit di0 xc = do
+   let di1 = Di.push "commit" di0
+   warningOnException di1 do
+      readIORef xc.txint >>= \case
+         Just False -> do
+            run xc \db -> do
+               S.exec db "COMMIT"
+                  `Ex.finally` atomicWriteIORef xc.txint Nothing
+            Di.debug_ di1 "OK"
+         Just True -> Ex.throwM ErrTransaction_Interrupted
+         Nothing ->
+            Ex.throwString "No transaction. Should never happen."
+
+-- | Internal
+unsafeRollback
+   :: Di.Df1
+   -> Maybe Ex.SomeException
+   -> ExclusiveConnection c
+   -> IO ()
+unsafeRollback di0 ye xc = do
+   let di1 = Di.push "rollback" di0
+   warningOnException di1 do
+      Ex.finally
+         ( readIORef xc.txint >>= \case
+            Just False -> do
+               for_ ye \e -> Di.notice di1 $ "Will rollback due to: " <> show e
+               run xc (flip S.exec "ROLLBACK")
+               Di.debug_ di1 "OK"
+            Just True ->
+               Di.info_ di1 "Previously interrupted, no need to rollback"
+            Nothing ->
+               Ex.throwString "No transaction. Should never happen."
+         )
+         (atomicWriteIORef xc.txint Nothing)
 
 connectionWriteTransaction
    :: Bool
@@ -429,47 +457,13 @@ connectionWriteTransaction commit c = do
    let di1 =
          Di.attr_ "transaction-mode" (if commit then "commit" else "rollback") $
             Di.attr "transaction" tId c.di
-       rollback (ye :: Maybe Ex.SomeException) = do
-         let di2 = Di.push "rollback" di1
-         warningOnException di2 do
-            readIORef xc.txint >>= \case
-               Just False -> do
-                  for_ ye \e ->
-                     Di.notice di2 $ "Will rollback due to: " <> show e
-                  run xc (flip S.exec "ROLLBACK")
-                  atomicWriteIORef xc.txint Nothing
-                  Di.debug_ di2 "OK"
-               Just True -> do
-                  atomicWriteIORef xc.txint Nothing
-                  Di.info_ di2 "Previously interrupted, no need to rollback"
-               Nothing ->
-                  Ex.throwString "No transaction. Should never happen."
    R.mkAcquireType1
-      ( do
-         let di2 = Di.push "begin" di1
-         warningOnException di2 do
-            readIORef xc.txint >>= \case
-               Nothing -> pure ()
-               _ -> Ex.throwString "Nested transaction. Should never happen."
-            run xc (flip S.exec "BEGIN IMMEDIATE")
-            atomicWriteIORef xc.txint $ Just False
-            Di.debug_ di2 "OK"
-      )
+      (unsafeBegin di1 True xc)
       ( \_ rt -> case releaseTypeException rt of
          Nothing
-            | commit -> do
-               let di2 = Di.push "commit" di1
-               warningOnException di2 do
-                  readIORef xc.txint >>= \case
-                     Just False -> do
-                        run xc (flip S.exec "COMMIT")
-                        atomicWriteIORef xc.txint Nothing
-                        Di.debug_ di2 "OK"
-                     Just True -> Ex.throwM ErrTransaction_Interrupted
-                     Nothing ->
-                        Ex.throwString "No transaction. Should never happen."
-            | otherwise -> rollback Nothing
-         Just e -> rollback (Just e)
+            | commit -> unsafeCommit di1 xc
+            | otherwise -> unsafeRollback di1 Nothing xc
+         Just e -> unsafeRollback di1 (Just e) xc
       )
    xconn <- R.mkAcquire1 (newTMVarIO (Just xc)) \t ->
       atomically $ tryTakeTMVar t >> putTMVar t Nothing
