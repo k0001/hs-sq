@@ -8,7 +8,6 @@ module Sq.Encoders
    , encodeNS
    , encodeSizedIntegral
    , encodeBinary
-   , encodeBinary'
    , encodeShow
    , encodeAeson
    , encodeAeson'
@@ -420,7 +419,7 @@ instance EncodeDefault Ae.Value where
 
 -- | 'S.BlobColumn'.
 instance EncodeDefault Bin.Put where
-   encodeDefault = encodeBinary' id
+   encodeDefault = contramap Bin.runPut encodeDefault
    {-# INLINE encodeDefault #-}
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
@@ -435,15 +434,10 @@ instance EncodeDefault Sci.Scientific where
 
 --------------------------------------------------------------------------------
 
--- | @'encodeBinary'  =  'encodeBinary'' "Data.Binary".'Bin.put'
-encodeBinary :: (Bin.Binary a) => Encode a
-encodeBinary = encodeBinary' Bin.put
-{-# INLINE encodeBinary #-}
-
 -- | 'S.BlobColumn'.
-encodeBinary' :: (a -> Bin.Put) -> Encode a
-encodeBinary' f = contramap (Bin.runPut . f) (encodeDefault @BL.ByteString)
-{-# INLINE encodeBinary' #-}
+encodeBinary :: (Bin.Binary a) => Encode a
+encodeBinary = contramap Bin.put encodeDefault
+{-# INLINE encodeBinary #-}
 
 -- | 'S.TextColumn'.
 encodeShow :: (Show a) => Encode a

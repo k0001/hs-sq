@@ -77,7 +77,6 @@ module Sq
    , encodeAeson
    , encodeAeson'
    , encodeBinary
-   , encodeBinary'
    , encodeShow
 
     -- ** Output

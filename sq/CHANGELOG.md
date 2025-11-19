@@ -2,8 +2,7 @@
 
 * CHANGED the type of `encodeAeson` and `encodeBinary`.
 
-* Added `hinput`, `houtput`, `encodeNS`, `decodeNS`, `encodeAeson'`,
-  `encodeBinary'`.
+* Added `hinput`, `houtput`, `encodeNS`, `decodeNS`, `encodeAeson'`.
 
 * Added `Contravariant` `Rep` instance for `Encode` and `Input`.
 
