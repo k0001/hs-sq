@@ -8,6 +8,7 @@ import Data.Bits
 import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
 import Data.Fixed
+import Data.Scientific qualified as Sci
 import Data.Functor.Contravariant
 import Data.Int
 import Data.Maybe
@@ -58,6 +59,7 @@ tree iop =
       , t2 @Time.UTCTime $ genUTCTime (HR.constantFrom epochUTCTime minUTCTime maxUTCTime)
       , t @Double $ H.double (HR.constantFrom 0 (fromIntegral minInteger) (fromIntegral maxInteger))
       , t @Float $ H.float (HR.constantFrom 0 (fromIntegral minInteger) (fromIntegral maxInteger))
+      , t @Sci.Scientific $ genScientific (HR.constantFrom 0 (-10) 10) HR.constantBounded
       -- TODO FAIL: , testProperty "Char" $ t @Char (pure '\55296')
       ]
   where
@@ -172,6 +174,13 @@ utcTimeToPOSIXPicoSeconds t = i
 posixPicoSecondsToUTCTime :: Integer -> Time.UTCTime
 posixPicoSecondsToUTCTime =
    Time.posixSecondsToUTCTime . Time.secondsToNominalDiffTime . MkFixed
+
+genScientific
+   :: (H.MonadGen m)
+   => H.Range Integer
+   -> H.Range Int
+   -> m Sci.Scientific
+genScientific rc re = Sci.scientific <$> H.integral rc <*> H.integral re
 
 -- genRational :: (H.MonadGen m) => m Rational
 -- genRational = do

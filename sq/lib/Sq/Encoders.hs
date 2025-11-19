@@ -34,9 +34,11 @@ import Data.List qualified as List
 import Data.Profunctor
 import Data.Proxy
 import Data.SOP qualified as SOP
+import Data.Scientific qualified as Sci
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Lazy.Builder qualified as TB
+import Data.Text.Lazy.Builder.Scientific qualified as Sci
 import Data.Text.Lazy.Encoding qualified as TL
 import Data.Time qualified as Time
 import Data.Time.Format.ISO8601 qualified as Time
@@ -416,9 +418,20 @@ instance EncodeDefault Ae.Value where
    encodeDefault = encodeAeson' Right
    {-# INLINE encodeDefault #-}
 
+-- | 'S.BlobColumn'.
 instance EncodeDefault Bin.Put where
    encodeDefault = encodeBinary' id
    {-# INLINE encodeDefault #-}
+
+-- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
+-- Uses 'Sci.Exponent' notation.
+instance EncodeDefault Sci.Scientific where
+   encodeDefault = Encode \x -> case Sci.toBoundedInteger x of
+      Nothing ->
+         unEncode
+            encodeDefault
+            (Sci.formatScientificBuilder Sci.Exponent Nothing x)
+      Just i -> unEncode encodeDefault (i :: Int64)
 
 --------------------------------------------------------------------------------
 

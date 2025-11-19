@@ -10,9 +10,10 @@
 * Added `InputDefault`, `OutputDefault` and related instances.
 
 * Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`,
-  for `binary`'s `Put`, for `UUID`.
+  for `binary`'s `Put`, for `UUID`, for `Scientific`.
 
-* Added `DecodeDefault` instances for `UUID`, for `aeson`'s `Value`.
+* Added `DecodeDefault` instances for `UUID`, for `aeson`'s `Value`, for
+  `Scientific`.
 
 * Export `BindingName` constructor.
 

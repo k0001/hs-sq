@@ -20,8 +20,10 @@ import Control.Monad
 import Control.Monad.Catch qualified as Ex (MonadThrow (..))
 import Control.Monad.Trans.Reader
 import Data.Aeson qualified as Ae
+import Data.Aeson.Parser qualified as Aep
 import Data.Aeson.Types qualified as Ae
 import Data.Attoparsec.Text qualified as AT
+import Data.Attoparsec.ByteString qualified as AB
 import Data.Attoparsec.Time qualified as AT8601
 import Data.Bifunctor
 import Data.Binary qualified as Bin
@@ -34,7 +36,9 @@ import Data.Fixed
 import Data.Int
 import Data.Proxy
 import Data.SOP qualified as SOP
+import Data.Scientific qualified as Sci
 import Data.Text qualified as T
+import Data.Text.Encoding qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Text.Unsafe qualified as T
 import Data.Time qualified as Time
@@ -493,6 +497,26 @@ instance DecodeDefault Ae.Value where
    decodeDefault =
       {-# SCC "decodeDefault/Ae.Value" #-}
       (decodeRefine Ae.eitherDecodeStrictText decodeDefault)
+
+-- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'.
+instance DecodeDefault Sci.Scientific where
+   decodeDefault = Decode \case
+      S.SQLText t -> case AB.parseOnly Aep.scientific (T.encodeUtf8 t) of
+         Right x -> Right x
+         Left _ -> first ErrDecode_Fail do
+            Ex.throwString "Malformed number"
+      S.SQLInteger i -> Right (fromIntegral i)
+      S.SQLFloat d
+         | not (isNaN d || isInfinite d)
+         , x <- Sci.fromFloatDigits d
+         , d == Sci.toRealFloat x ->
+            Right x
+         | otherwise -> first ErrDecode_Fail do
+            Ex.throwString
+               "Lossy conversion from floating point"
+      c ->
+         Left $ ErrDecode_Type (sqlDataColumnType c) do
+            [S.IntegerColumn, S.FloatColumn, S.TextColumn]
 
 --------------------------------------------------------------------------------
 
