@@ -1,85 +1,85 @@
 {
-  description = "Haskell 'sq' library";
-
   inputs = {
-    flakety.url = "github:k0001/flakety";
-    nixpkgs.follows = "flakety/nixpkgs";
-    flake-parts.follows = "flakety/flake-parts";
-    hs_resourcet-extra.url =
-      "github:k0001/hs-resourcet-extra/8b05ef384b628e66c0c6742e40290cb06aaca13a";
-    hs_resourcet-extra.inputs.flakety.follows = "flakety";
-    hs_direct-sqlite.url =
-      "github:IreneKnapp/direct-sqlite/15528503e2a53a87c50d66f52032bda5058d46f7";
-    hs_direct-sqlite.flake = false;
+    nixpkgs.url = "github:nixos/nixpkgs?rev=37ff64b7108517f8b6ba5705ee5085eac636a249";
+    flake-parts.url = "github:hercules-ci/flake-parts";
+    haskell-flake.url = "github:srid/haskell-flake";
   };
-
-  outputs = inputs@{ ... }:
-    inputs.flake-parts.lib.mkFlake { inherit inputs; } {
-      flake.overlays.default = inputs.nixpkgs.lib.composeManyExtensions [
-        inputs.flakety.overlays.default
-        inputs.hs_resourcet-extra.overlays.default
-        (final: prev:
-          let
-            hsLib = prev.haskell.lib;
-            hsClean = drv:
-              hsLib.overrideCabal drv
-              (old: { src = prev.lib.sources.cleanSource old.src; });
-          in {
-            haskell = prev.haskell // {
-              packageOverrides = prev.lib.composeExtensions
-                (prev.haskell.packageOverrides or (_: _: { })) (hfinal: hprev:
-                  prev.lib.optionalAttrs
-                  (prev.lib.versionAtLeast hprev.ghc.version "9.6") {
-                    sq = hsLib.doBenchmark (hfinal.callPackage ./sq { });
-                    direct-sqlite = hfinal.callCabal2nix "direct-sqlite"
-                      inputs.hs_direct-sqlite { };
-                    #direct-sqlite = hsLib.addExtraLibrary
-                    #  (hsLib.enableCabalFlag hprev.direct-sqlite "systemlib")
-                    #  final.sqlite;
-                  });
-            };
-          })
-      ];
-      systems = [ "x86_64-linux" "i686-linux" "aarch64-linux" ];
-      perSystem = { config, pkgs, system, ... }: {
-        _module.args.pkgs = import inputs.nixpkgs {
-          inherit system;
-          overlays = [ inputs.self.overlays.default ];
-        };
-        packages = {
-          sq__ghc98 = pkgs.haskell.packages.ghc98.sq;
-          sq__ghc98__sdist =
-            pkgs.haskell.packages.ghc98.cabalSdist { src = ./sq; };
-          sq__ghc98__sdistDoc =
-            pkgs.haskell.lib.documentationTarball config.packages.sq__ghc98;
-          default = pkgs.releaseTools.aggregate {
-            name = "every output from this flake";
-            constituents = [
-              config.packages.sq__ghc98
-              config.packages.sq__ghc98.doc
-              config.packages.sq__ghc98__sdist
-              config.packages.sq__ghc98__sdistDoc
-              config.devShells.ghc98
-            ];
-          };
-        };
-        devShells = let
-          mkShellFor = ghc:
-            ghc.shellFor {
-              packages = p: [ p.sq ];
-              doBenchmark = true;
-              withHoogle = true;
-              nativeBuildInputs = [
-                pkgs.cabal-install
-                pkgs.cabal2nix
-                pkgs.ghcid
-                pkgs.sqlite-interactive
+  outputs =
+    inputs@{
+      self,
+      nixpkgs,
+      flake-parts,
+      ...
+    }:
+    flake-parts.lib.mkFlake { inherit inputs; } (
+      { withSystem, ... }:
+      let
+        # mapListToAttrs f [a b] = {a = f a; b = f b;}
+        mapListToAttrs =
+          f: xs:
+          builtins.listToAttrs (
+            builtins.map (x: {
+              name = x;
+              value = f x;
+            }) xs
+          );
+        ghcVersions = [
+          "ghc984"
+          "ghc9102"
+          "ghc9122"
+        ];
+      in
+      {
+        systems = nixpkgs.lib.systems.flakeExposed;
+        imports = [
+          inputs.haskell-flake.flakeModule
+        ];
+        flake.haskellFlakeProjectModules = mapListToAttrs (
+          ghc:
+          (
+            { pkgs, lib, ... }:
+            withSystem pkgs.system (
+              { config, ... }: config.haskellProjects.${ghc}.defaults.projectModules.output
+            )
+          )
+        ) ghcVersions;
+        perSystem =
+          {
+            self',
+            pkgs,
+            config,
+            ...
+          }:
+          {
+            haskellProjects = mapListToAttrs (ghc: {
+              basePackages = pkgs.haskell.packages.${ghc};
+              settings.sq = {
+                benchmark = true;
+                check = true;
+                haddock = true;
+                libraryProfiling = true;
+              };
+              packages = {
+                brick.source = "2.9";
+              };
+              autoWire = [
+                "packages"
+                "checks"
+                "devShells"
               ];
-            };
-        in {
-          default = config.devShells.ghc98;
-          ghc98 = mkShellFor pkgs.haskell.packages.ghc98;
-        };
-      };
-    };
+              devShell = {
+                tools = hp: {
+                  inherit (pkgs)
+                    cabal2nix
+                    sqlite-interactive
+                    ;
+                };
+              };
+            }) ghcVersions;
+            packages.default = self'.packages.ghc9122-sq;
+            packages.doc = self'.packages.ghc9122-sq.doc;
+            devShells.default = self'.devShells.ghc9122;
+          };
+      }
+    );
 }

@@ -488,6 +488,12 @@ instance DecodeDefault UUID.UUID where
          decodeDefault
       )
 
+-- | 'S.TextColumn'.
+instance DecodeDefault Ae.Value where
+   decodeDefault =
+      {-# SCC "decodeDefault/Ae.Value" #-}
+      (decodeRefine Ae.eitherDecodeStrictText decodeDefault)
+
 --------------------------------------------------------------------------------
 
 -- @'decodeBinary'  =  'decodeBinary'' "Data.Binary".'Bin.get'@
@@ -511,7 +517,4 @@ decodeAeson = decodeAeson' Ae.parseJSON
 
 -- | 'S.TextColumn'.
 decodeAeson' :: (Ae.Value -> Ae.Parser a) -> Decode a
-decodeAeson' p =
-   decodeRefine
-      (Ae.eitherDecodeStrictText >=> Ae.parseEither p)
-      (decodeDefault @T.Text)
+decodeAeson' p = decodeRefine (Ae.parseEither p) (decodeDefault @Ae.Value)

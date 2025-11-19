@@ -1,10 +1,11 @@
+packages:
+  sq/
+
 profiling: True
 profiling-detail: toplevel-functions
 executable-profiling: True
 optimization: True
 documentation: True
-benchmarks: True
+benchmarks: False
 tests: True
 test-show-details: streaming
-packages:
-  sq/

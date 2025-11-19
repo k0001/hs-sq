@@ -78,6 +78,7 @@ library
     resourcet,
     resourcet-extra,
     safe-exceptions,
+    scientific,
     sop-core,
     stm,
     streaming,

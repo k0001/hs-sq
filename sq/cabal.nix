@@ -3,9 +3,9 @@
 , contravariant, criterion, deepseq, df1, di, di-core, di-df1
 , direct-sqlite, directory, exceptions, filepath, foldl, hedgehog
 , lib, profunctors, ref-tf, resource-pool, resourcet
-, resourcet-extra, safe-exceptions, sop-core, stm, streaming, tasty
-, tasty-hedgehog, tasty-hunit, template-haskell, text, time
-, transformers, uuid-types
+, resourcet-extra, safe-exceptions, scientific, sop-core, stm
+, streaming, tasty, tasty-hedgehog, tasty-hunit, template-haskell
+, text, time, transformers, uuid-types
 }:
 mkDerivation {
   pname = "sq";
@@ -16,8 +16,8 @@ mkDerivation {
     bytestring clock containers contravariant deepseq di-core di-df1
     direct-sqlite directory exceptions filepath foldl profunctors
     ref-tf resource-pool resourcet resourcet-extra safe-exceptions
-    sop-core stm streaming template-haskell text time transformers
-    uuid-types
+    scientific sop-core stm streaming template-haskell text time
+    transformers uuid-types
   ];
   testHaskellDepends = [
     aeson async base binary bytestring df1 di di-core hedgehog ref-tf
