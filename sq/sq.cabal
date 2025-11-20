@@ -73,6 +73,7 @@ library
     exceptions,
     filepath,
     foldl,
+    integer-logarithms,
     profunctors,
     ref-tf,
     resource-pool,

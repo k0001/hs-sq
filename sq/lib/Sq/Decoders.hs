@@ -6,7 +6,7 @@ module Sq.Decoders
    , decodeMaybe
    , decodeEither
    , decodeNS
-   , decodeSizedIntegral
+   , decodeBoundedIntegral
    , decodeBinary
    , decodeBinary'
    , decodeRead
@@ -22,8 +22,8 @@ import Control.Monad.Trans.Reader
 import Data.Aeson qualified as Ae
 import Data.Aeson.Parser qualified as Aep
 import Data.Aeson.Types qualified as Ae
-import Data.Attoparsec.Text qualified as AT
 import Data.Attoparsec.ByteString qualified as AB
+import Data.Attoparsec.Text qualified as AT
 import Data.Attoparsec.Time qualified as AT8601
 import Data.Bifunctor
 import Data.Binary qualified as Bin
@@ -51,7 +51,7 @@ import Database.SQLite3 qualified as S
 import GHC.Float (double2Float, float2Double)
 import GHC.Stack
 import Numeric.Natural
-import Text.Read (readEither, readMaybe)
+import Text.Read (readEither)
 
 import Sq.Null (Null)
 import Sq.Support
@@ -107,6 +107,11 @@ data ErrDecode
    deriving stock (Show)
    deriving anyclass (Ex.Exception)
 
+errDecodeFailString :: (HasCallStack) => String -> ErrDecode
+errDecodeFailString s =
+   ErrDecode_Fail $ Ex.toException $ Ex.StringException s ?callStack
+{-# INLINE errDecodeFailString #-}
+
 --------------------------------------------------------------------------------
 
 sqlDataColumnType :: S.SQLData -> S.ColumnType
@@ -130,9 +135,7 @@ decodeRefine
    -> Decode b
 decodeRefine f (Decode g) = Decode \raw -> do
    a <- g raw
-   case f a of
-      Right b -> Right b
-      Left s -> first ErrDecode_Fail (Ex.throwString s)
+   first errDecodeFailString (f a)
 
 --------------------------------------------------------------------------------
 -- Core decodes
@@ -274,79 +277,110 @@ instance DecodeDefault Integer where
       {-# SCC "decodeDefault/Integer" #-}
       ( Decode \case
          S.SQLInteger i -> Right (fromIntegral i)
+         S.SQLText t -> case scientificFromText t of
+            Just s -> case Sci.floatingOrInteger s of
+               Right ~i
+                  | sMin <= s && s <= sMax -> Right i
+                  | otherwise -> Left $ errDecodeFailString "Integer too large"
+               Left (_ :: Double) ->
+                  Left $ errDecodeFailString "Not an integer"
+            Nothing -> Left $ errDecodeFailString "Malformed number"
          S.SQLFloat d
-            | not (isNaN d || isInfinite d)
-            , (i, 0) <- properFraction d ->
-               Right i
-            | otherwise -> first ErrDecode_Fail do
-               Ex.throwString "Not an integer"
-         S.SQLText t
-            | Just i <- readMaybe (T.unpack t) -> Right i
-            | otherwise -> first ErrDecode_Fail do
-               Ex.throwString "Not an integer"
+            | isNaN d -> Left $ errDecodeFailString "NaN"
+            | isInfinite d -> Left $ errDecodeFailString "Infinity"
+            | (i, 0) <- properFraction d, d == fromIntegral i -> Right i
+            | otherwise -> Left $ errDecodeFailString "Lossy conversion"
          x -> Left $ ErrDecode_Type (sqlDataColumnType x) do
             [S.IntegerColumn, S.FloatColumn, S.TextColumn]
       )
+     where
+      sMax, sMin :: Sci.Scientific
+      sMax = Sci.scientific 1 (fromIntegral (maxBound :: Word16))
+      sMin = Sci.scientific (-1) (fromIntegral (maxBound - 1 :: Word16))
 
--- | 'S.IntegerColumn'.
-decodeSizedIntegral :: (Integral a, Bits a) => Decode a
-decodeSizedIntegral = do
-   i <- decodeDefault @Integer
-   case toIntegralSized i of
-      Just a -> pure a
-      Nothing -> fail "Integral overflow or underflow"
+-- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'.
+decodeBoundedIntegral :: forall a. (Integral a, Bounded a, Bits a) => Decode a
+decodeBoundedIntegral = Decode \case
+   S.SQLInteger i -> f i
+   S.SQLText t -> case scientificFromText t of
+      Just s
+         | Sci.isInteger s -> case Sci.toBoundedInteger s of
+            Just a -> Right a
+            Nothing -> Left $ errDecodeFailString "Overflow or underflow"
+         | otherwise -> Left $ errDecodeFailString "Not an integer"
+      Nothing -> Left $ errDecodeFailString "Malformed number"
+   S.SQLFloat d
+      | isNaN d -> Left $ errDecodeFailString "NaN"
+      | isInfinite d -> Left $ errDecodeFailString "Infinity"
+      | (i :: Integer, 0) <- properFraction d ->
+         case f i of
+            Right a
+               | d == fromIntegral a -> Right a
+               | otherwise -> Left $ errDecodeFailString "Lossy conversion"
+            Left e -> Left e
+      | otherwise -> Left $ errDecodeFailString "Not an integer"
+   x -> Left $ ErrDecode_Type (sqlDataColumnType x) do
+      [S.IntegerColumn, S.FloatColumn, S.TextColumn]
+  where
+   f :: (Bits i, Integral i) => i -> Either ErrDecode a
+   f i = case toIntegralSized i of
+      Just a -> Right a
+      Nothing -> Left $ errDecodeFailString "Overflow or underflow"
 
 -- | 'S.IntegerColumn'.
 instance DecodeDefault Int8 where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault = decodeBoundedIntegral
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn'.
 instance DecodeDefault Word8 where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault = decodeBoundedIntegral
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn'.
 instance DecodeDefault Int16 where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault = decodeBoundedIntegral
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn'.
 instance DecodeDefault Word16 where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault = decodeBoundedIntegral
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn'.
 instance DecodeDefault Int32 where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault = decodeBoundedIntegral
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn'.
 instance DecodeDefault Word32 where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault = decodeBoundedIntegral
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance DecodeDefault Word where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault = decodeBoundedIntegral
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance DecodeDefault Word64 where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault = decodeBoundedIntegral
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn'.
 instance DecodeDefault Int where
    decodeDefault =
       caseWordSize_32_64
-         decodeSizedIntegral
+         decodeBoundedIntegral
          (fromIntegral <$> decodeDefault @Int64)
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance DecodeDefault Natural where
-   decodeDefault = decodeSizedIntegral
+   decodeDefault =
+      decodeRefine
+         (maybe (Left "underflow") Right . toIntegralSized)
+         (decodeDefault @Integer)
    {-# INLINE decodeDefault #-}
 
 -- | 'S.IntegerColumn' and 'S.FloatColumn' only.
@@ -480,7 +514,7 @@ instance DecodeDefault Float where
          let f = double2Float d
          if float2Double f == d
             then Right f
-            else Left "Lossy conversion from Double to Float"
+            else Left "Lossy conversion"
       )
 
 -- | 'S.TextColumn'.
@@ -500,23 +534,29 @@ instance DecodeDefault Ae.Value where
 
 -- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'.
 instance DecodeDefault Sci.Scientific where
-   decodeDefault = Decode \case
-      S.SQLText t -> case AB.parseOnly Aep.scientific (T.encodeUtf8 t) of
-         Right x -> Right x
-         Left _ -> first ErrDecode_Fail do
-            Ex.throwString "Malformed number"
-      S.SQLInteger i -> Right (fromIntegral i)
-      S.SQLFloat d
-         | not (isNaN d || isInfinite d)
-         , x <- Sci.fromFloatDigits d
-         , d == Sci.toRealFloat x ->
-            Right x
-         | otherwise -> first ErrDecode_Fail do
-            Ex.throwString
-               "Lossy conversion from floating point"
-      c ->
-         Left $ ErrDecode_Type (sqlDataColumnType c) do
-            [S.IntegerColumn, S.FloatColumn, S.TextColumn]
+   decodeDefault =
+      {-# SCC "decodeDefault/Scientific" #-}
+      ( Decode \case
+         S.SQLInteger i -> Right (fromIntegral i)
+         S.SQLText t -> case scientificFromText t of
+            Just x -> Right x
+            Nothing -> Left $ errDecodeFailString "Malformed number"
+         S.SQLFloat d
+            | isNaN d -> Left $ errDecodeFailString "NaN"
+            | isInfinite d -> Left $ errDecodeFailString "Infinity"
+            | x <- Sci.fromFloatDigits d
+            , d == Sci.toRealFloat x ->
+               Right x
+            | otherwise ->
+               Left $ errDecodeFailString "Lossy conversion"
+         c ->
+            Left $ ErrDecode_Type (sqlDataColumnType c) do
+               [S.IntegerColumn, S.FloatColumn, S.TextColumn]
+      )
+
+scientificFromText :: T.Text -> Maybe Sci.Scientific
+scientificFromText =
+   either (const Nothing) Just . AB.parseOnly Aep.scientific . T.encodeUtf8
 
 --------------------------------------------------------------------------------
 

@@ -73,7 +73,6 @@ module Sq
    , encodeMaybe
    , encodeEither
    , encodeNS
-   , encodeSizedIntegral
    , encodeAeson
    , encodeAeson'
    , encodeBinary
@@ -94,7 +93,7 @@ module Sq
    , decodeMaybe
    , decodeEither
    , decodeNS
-   , decodeSizedIntegral
+   , decodeBoundedIntegral
    , decodeAeson
    , decodeAeson'
    , decodeBinary

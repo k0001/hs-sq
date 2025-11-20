@@ -2,6 +2,10 @@
 
 * CHANGED the type of `encodeAeson` and `encodeBinary`.
 
+* REMOVED `encodeSizedIntegral`. Go through `Int64` or `Scientific` instead.
+
+* REMOVED `decodeSizedIntegral`. Use `decodeBoundedIntegral` instead.
+
 * Added `hinput`, `houtput`, `encodeNS`, `decodeNS`, `encodeAeson'`.
 
 * Added `Contravariant` `Rep` instance for `Encode` and `Input`.
@@ -9,7 +13,7 @@
 * Added `InputDefault`, `OutputDefault` and related instances.
 
 * Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`,
-  for `binary`'s `Put`, for `UUID`, for `Scientific`.
+  for `binary`'s `Put`, for `UUID`, for `Scientific`, for `Fixed`.
 
 * Added `DecodeDefault` instances for `UUID`, for `aeson`'s `Value`, for
   `Scientific`.

@@ -6,7 +6,6 @@ module Sq.Encoders
    , encodeMaybe
    , encodeEither
    , encodeNS
-   , encodeSizedIntegral
    , encodeBinary
    , encodeShow
    , encodeAeson
@@ -19,13 +18,13 @@ import Data.Aeson qualified as Ae
 import Data.Bifunctor
 import Data.Binary qualified as Bin
 import Data.Binary.Put qualified as Bin
-import Data.Bits
 import Data.Bool
 import Data.ByteString qualified as B
 import Data.ByteString.Builder qualified as BB
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Short qualified as BS
 import Data.Coerce
+import Data.Fixed
 import Data.Functor.Contravariant
 import Data.Functor.Contravariant.Rep
 import Data.Int
@@ -47,6 +46,7 @@ import Data.Word
 import Database.SQLite3 qualified as S
 import GHC.Float (float2Double)
 import GHC.Stack
+import Math.NumberTheory.Logarithms
 import Numeric.Natural
 
 import Sq.Null (Null)
@@ -72,8 +72,10 @@ newtype Encode a
 
 instance Representable Encode where
    type Rep Encode = Either ErrEncode S.SQLData
-   tabulate = Encode
-   index = unEncode
+   tabulate = coerce
+   {-# INLINE tabulate #-}
+   index = coerce
+   {-# INLINE index #-}
 
 unEncode :: Encode a -> a -> Either ErrEncode S.SQLData
 unEncode = coerce
@@ -254,30 +256,23 @@ instance EncodeDefault Int where
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance EncodeDefault Word where
-   encodeDefault = encodeSizedIntegral
+   encodeDefault = fromIntegral >$< encodeDefault @Sci.Scientific
    {-# INLINE encodeDefault #-}
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance EncodeDefault Word64 where
-   encodeDefault = encodeSizedIntegral
+   encodeDefault = fromIntegral >$< encodeDefault @Sci.Scientific
    {-# INLINE encodeDefault #-}
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance EncodeDefault Integer where
-   encodeDefault = encodeSizedIntegral
+   encodeDefault = fromIntegral >$< encodeDefault @Sci.Scientific
    {-# INLINE encodeDefault #-}
 
 -- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
 instance EncodeDefault Natural where
-   encodeDefault = encodeSizedIntegral
+   encodeDefault = fromIntegral >$< encodeDefault @Sci.Scientific
    {-# INLINE encodeDefault #-}
-
--- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
-encodeSizedIntegral :: (Integral a, Bits a, HasCallStack) => Encode a
-encodeSizedIntegral = Encode \a ->
-   case toIntegralSized a of
-      Just i -> unEncode (encodeDefault @Int64) i
-      Nothing -> unEncode (encodeDefault @String) (show (toInteger a))
 
 -- | 'S.TextColumn'.
 instance EncodeDefault TL.Text where
@@ -432,16 +427,27 @@ instance EncodeDefault Sci.Scientific where
             (Sci.formatScientificBuilder Sci.Exponent Nothing x)
       Just i -> unEncode encodeDefault (i :: Int64)
 
+-- | 'S.IntegerColumn' if it fits in 'Int64', otherwise 'S.TextColumn'.
+-- Uses 'Sci.Exponent' notation.
+instance forall e. (HasResolution e) => EncodeDefault (Fixed e) where
+   encodeDefault =
+      contramap
+         (\(MkFixed i) -> Sci.normalize $ Sci.scientific i e10)
+         encodeDefault
+     where
+      e10 :: Int
+      e10 = negate $ integerLog10 $ resolution $ Proxy @e
+
 --------------------------------------------------------------------------------
 
--- | 'S.BlobColumn'.
+-- | 'S.BlobColumn'. See also the 'EncodeDefault' instance for 'Bin.Put'.
 encodeBinary :: (Bin.Binary a) => Encode a
-encodeBinary = contramap Bin.put encodeDefault
+encodeBinary = Bin.put >$< encodeDefault
 {-# INLINE encodeBinary #-}
 
 -- | 'S.TextColumn'.
 encodeShow :: (Show a) => Encode a
-encodeShow = show >$< (encodeDefault @String)
+encodeShow = show >$< encodeDefault
 {-# INLINE encodeShow #-}
 
 -- | @'encodeAeson'  =  'encodeAeson' ('Left' . "Data.Aeson".'Ae.toEncoding')@
@@ -449,12 +455,11 @@ encodeAeson :: (Ae.ToJSON a) => Encode a
 encodeAeson = encodeAeson' (Left . Ae.toEncoding)
 {-# INLINE encodeAeson #-}
 
--- | Encodes as 'S.TextColumn'.
+-- | Encodes as 'S.TextColumn'. See also the 'EncodeDefault' instance for
+-- 'Ae.Value'.
 encodeAeson' :: (a -> Either Ae.Encoding Ae.Value) -> Encode a
 encodeAeson' f =
-   contramap
-      (either g (g . Ae.toEncoding) . f)
-      (encodeDefault @TL.Text)
+   contramap (either g (g . Ae.toEncoding) . f) encodeDefault
   where
    g :: Ae.Encoding -> TL.Text
    g = TL.decodeUtf8 . BB.toLazyByteString . Ae.fromEncoding
