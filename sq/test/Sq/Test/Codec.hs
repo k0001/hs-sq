@@ -8,10 +8,10 @@ import Data.Bits
 import Data.ByteString qualified as B
 import Data.ByteString.Lazy qualified as BL
 import Data.Fixed
-import Data.Scientific qualified as Sci
 import Data.Functor.Contravariant
 import Data.Int
 import Data.Maybe
+import Data.Scientific qualified as Sci
 import Data.Text qualified as T
 import Data.Text.Lazy qualified as TL
 import Data.Time qualified as Time
@@ -60,6 +60,9 @@ tree iop =
       , t @Double $ H.double (HR.constantFrom 0 (fromIntegral minInteger) (fromIntegral maxInteger))
       , t @Float $ H.float (HR.constantFrom 0 (fromIntegral minInteger) (fromIntegral maxInteger))
       , t @Sci.Scientific $ genScientific (HR.constantFrom 0 (-10) 10) HR.constantBounded
+      , t @(Fixed E0) $ genFixed (HR.constantFrom 0 minInteger maxInteger)
+      , t @(Fixed E2) $ genFixed (HR.constantFrom 0 minInteger maxInteger)
+      , t @(Fixed E9) $ genFixed (HR.constantFrom 0 minInteger maxInteger)
       -- TODO FAIL: , testProperty "Char" $ t @Char (pure '\55296')
       ]
   where
@@ -181,6 +184,9 @@ genScientific
    -> H.Range Int
    -> m Sci.Scientific
 genScientific rc re = Sci.scientific <$> H.integral rc <*> H.integral re
+
+genFixed :: (H.MonadGen m) => H.Range Integer -> m (Fixed e)
+genFixed ri = MkFixed <$> H.integral ri
 
 -- genRational :: (H.MonadGen m) => m Rational
 -- genRational = do

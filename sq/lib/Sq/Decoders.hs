@@ -280,10 +280,9 @@ instance DecodeDefault Integer where
          S.SQLText t -> case scientificFromText t of
             Just s -> case Sci.floatingOrInteger s of
                Right ~i
-                  | sMin <= s && s <= sMax -> Right i
+                  | sciIntegerMin <= s && s <= sciIntegerMax -> Right i
                   | otherwise -> Left $ errDecodeFailString "Integer too large"
-               Left (_ :: Double) ->
-                  Left $ errDecodeFailString "Not an integer"
+               Left (_ :: Double) -> Left $ errDecodeFailString "Not an integer"
             Nothing -> Left $ errDecodeFailString "Malformed number"
          S.SQLFloat d
             | isNaN d -> Left $ errDecodeFailString "NaN"
@@ -293,10 +292,14 @@ instance DecodeDefault Integer where
          x -> Left $ ErrDecode_Type (sqlDataColumnType x) do
             [S.IntegerColumn, S.FloatColumn, S.TextColumn]
       )
-     where
-      sMax, sMin :: Sci.Scientific
-      sMax = Sci.scientific 1 (fromIntegral (maxBound :: Word16))
-      sMin = Sci.scientific (-1) (fromIntegral (maxBound - 1 :: Word16))
+
+-- | Some probably large enough numbers.
+sciIntegerMax :: Sci.Scientific
+sciIntegerMax = Sci.scientific 1 (fromIntegral (maxBound :: Int16))
+
+-- | Some probably large enough numbers.
+sciIntegerMin :: Sci.Scientific
+sciIntegerMin = Sci.scientific (-1) (fromIntegral (maxBound :: Int16))
 
 -- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'.
 decodeBoundedIntegral :: forall a. (Integral a, Bounded a, Bits a) => Decode a
@@ -379,7 +382,7 @@ instance DecodeDefault Int where
 instance DecodeDefault Natural where
    decodeDefault =
       decodeRefine
-         (maybe (Left "underflow") Right . toIntegralSized)
+         (maybe (Left "Underflow") Right . toIntegralSized)
          (decodeDefault @Integer)
    {-# INLINE decodeDefault #-}
 
@@ -531,6 +534,26 @@ instance DecodeDefault Ae.Value where
    decodeDefault =
       {-# SCC "decodeDefault/Ae.Value" #-}
       (decodeRefine Ae.eitherDecodeStrictText decodeDefault)
+
+-- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'.
+instance forall e. (HasResolution e) => DecodeDefault (Fixed e) where
+   decodeDefault =
+      {-# SCC "decodeDefault/Fixed" #-}
+      ( decodeRefine
+         ( \s0 ->
+            let s1 = s0 * smult
+            in  case Sci.floatingOrInteger s1 of
+                  Right ~i
+                     | sciIntegerMin <= s1 && s1 <= sciIntegerMax ->
+                        Right (MkFixed i)
+                     | otherwise -> Left "Integer too large"
+                  Left (_ :: Double) -> Left "Lossy conversion"
+         )
+         decodeDefault
+      )
+     where
+      smult :: Sci.Scientific
+      smult = fromInteger (resolution (Proxy @e))
 
 -- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'.
 instance DecodeDefault Sci.Scientific where

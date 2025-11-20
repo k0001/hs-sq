@@ -16,7 +16,7 @@
   for `binary`'s `Put`, for `UUID`, for `Scientific`, for `Fixed`.
 
 * Added `DecodeDefault` instances for `UUID`, for `aeson`'s `Value`, for
-  `Scientific`.
+  `Scientific`, for `Fixed`.
 
 * Export `BindingName` constructor.
 
