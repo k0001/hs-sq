@@ -13,7 +13,7 @@ synopsis: High-level SQLite client.
 description: High-level SQLite client.
 homepage: https://github.com/k0001/hs-sq
 bug-reports: https://github.com/k0001/hs-sq/issues
-tested-with: GHC == 9.8.1
+tested-with: GHC == 9.12.2
 
 common basic
   default-language: GHC2021
