@@ -20,6 +20,7 @@ import Data.Time.Format.ISO8601 qualified as Time
 import Data.Typeable
 import Data.UUID.Types qualified as UUID
 import Data.Word
+import GHC.Generics qualified as G
 import Hedgehog qualified as H
 import Hedgehog.Gen qualified as H
 import Hedgehog.Range qualified as HR
@@ -63,7 +64,8 @@ tree iop =
       , t @(Fixed E0) $ genFixed (HR.constantFrom 0 minInteger maxInteger)
       , t @(Fixed E2) $ genFixed (HR.constantFrom 0 minInteger maxInteger)
       , t @(Fixed E9) $ genFixed (HR.constantFrom 0 minInteger maxInteger)
-      -- TODO FAIL: , testProperty "Char" $ t @Char (pure '\55296')
+      , -- TODO FAIL: , testProperty "Char" $ t @Char (pure '\55296')
+        tGeneric
       ]
   where
    t
@@ -110,6 +112,23 @@ tree iop =
             a0 <- H.forAll ga
             a1 <- Sq.read p $ Sq.one idStatement a0
             a0 H.=== a1
+         ]
+   tGeneric :: TestTree
+   tGeneric =
+      testGroup
+         "Generic InputDefault/OutputDefault"
+         [ testProperty "Foo" $ H.property do
+            p <- liftIO iop
+            a0 <- H.forAll genFoo
+            a1 <- Sq.read p do
+               Sq.one
+                  ( Sq.readStatement
+                     Sq.inputDefault
+                     Sq.outputDefault
+                     "SELECT $x AS x, $y AS y"
+                  )
+                  a0
+            Foo0{x = a0.x, y = a0.y} H.=== a1
          ]
 
 newtype WrapBinary a = WrapBinary a
@@ -193,3 +212,14 @@ genFixed ri = MkFixed <$> H.integral ri
 --    n <- genInteger
 --    d <- H.integral $ H.linear 1 (10 ^ (10 :: Int))
 --    pure (n % d)
+
+data Foo
+   = Foo0 {x :: Int, y :: String}
+   | Foo1 {x :: Int, y :: String}
+   deriving (Eq, Show, G.Generic, Sq.InputDefault, Sq.OutputDefault)
+
+genFoo :: (H.MonadGen m) => m Foo
+genFoo = do
+   x <- H.integral HR.constantBounded
+   y <- H.string (HR.constant 0 50) H.unicode
+   H.element [Foo0 x y, Foo1 x y]

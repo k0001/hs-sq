@@ -23,12 +23,13 @@ common basic
   default-extensions:
     BlockArguments
     DataKinds
+    DefaultSignatures
     DeriveAnyClass
     DerivingStrategies
     DerivingVia
     DuplicateRecordFields
-    LambdaCase
     ImplicitParams
+    LambdaCase
     OverloadedRecordDot
     OverloadedStrings
     RecordWildCards
@@ -58,8 +59,8 @@ library
     adjunctions,
     aeson,
     attoparsec,
-    attoparsec-iso8601,
     attoparsec-aeson,
+    attoparsec-iso8601,
     binary,
     bytestring,
     clock,
@@ -73,6 +74,7 @@ library
     exceptions,
     filepath,
     foldl,
+    generics-sop,
     integer-logarithms,
     profunctors,
     ref-tf,

@@ -7,9 +7,11 @@ module Sq.Output
    , decode
    , runOutput
    , output
+   , OutputDefault (..)
+   , goutputDefault
+   , GOutputDefault
    , houtput
    , HOutput
-   , OutputDefault (..)
    ) where
 
 import Control.Applicative
@@ -17,11 +19,14 @@ import Control.Exception.Safe qualified as Ex
 import Control.Monad
 import Control.Monad.Trans.Resource qualified as R hiding (runResourceT)
 import Data.Coerce
+import Data.Kind
 import Data.List.NonEmpty qualified as NEL
 import Data.Proxy
-import Data.SOP qualified as SOP
 import Data.String
 import Database.SQLite3 qualified as S
+import GHC.Generics qualified as G
+import Generics.SOP qualified as SOP
+import Generics.SOP.GGP qualified as SOP
 
 import Sq.Decoders
 import Sq.Names
@@ -205,8 +210,11 @@ instance (DecodeDefault i) => IsString (Output i) where
    fromString s = decode (fromString s) decodeDefault
    {-# INLINE fromString #-}
 
--- | 'Data.Kind.Constraint' to be satisfied for using 'honput'.
-type HOutput h xs = HAsum h xs
+--------------------------------------------------------------------------------
+
+-- | 'Constraint' to be satisfied for using 'houtput'.
+type HOutput :: ((Type -> Type) -> k -> Type) -> k -> Constraint
+type HOutput = HAsum
 
 -- | Given a "Data.SOP".'SOP.Prod' containing all the possible 'Output'
 -- decoders, obtain an 'Output' for any 'SOP.NS', 'SOP.NP', 'SOP.SOP' or
@@ -218,15 +226,44 @@ houtput :: (HOutput h xs) => SOP.Prod h Output xs -> Output (h SOP.I xs)
 houtput = hasum
 {-# INLINE houtput #-}
 
--- | We don't export this, because we export 'OutputDefault' instances for
--- 'SOP.NS', 'SOP.NP', 'SOP.SOP' and 'SOP.POP'.
-houtputDefault
-   :: ( HOutput h xs
-      , SOP.AllN (SOP.Prod h) OutputDefault xs
-      , SOP.HPure (SOP.Prod h)
-      )
-   => Output (h SOP.I xs)
-houtputDefault = houtput (SOP.hcpure (Proxy @OutputDefault) outputDefault)
+--------------------------------------------------------------------------------
+
+-- | 'Constraint' to be satisfied for using 'goutputDefault'.
+type GOutputDefault :: Type -> Constraint
+type GOutputDefault o =
+   ( OnlyRecords (SOP.GDatatypeInfoOf o)
+   , SOP.All2 DecodeDefault (SOP.GCode o)
+   , G.Generic o
+   , SOP.GTo o
+   , SOP.GDatatypeInfo o
+   , HOutput SOP.SOP (SOP.GCode o)
+   )
+
+-- | Generic 'Output' implementation for types with GHC 'G.Generic' instance
+-- where all the constructors are records with named fields, to be used as
+-- 'Name's, and each field type has a 'DecodeDefault' instance.
+--
+-- If the datatype has more than one constructor, each one is tried in order
+-- until one of them matches.
+goutputDefault :: forall o. (GOutputDefault o) => Output o
+goutputDefault =
+   fmap SOP.gto $ houtput $ SOP.POP do
+      case SOP.gdatatypeInfo (Proxy @o) of
+         SOP.Newtype _ _ ci -> f ci SOP.:* SOP.Nil
+         SOP.ADT _ _ cis _ ->
+            SOP.hcmap (Proxy @(SOP.All DecodeDefault)) f cis
+  where
+   f
+      :: forall b
+       . (SOP.All DecodeDefault b)
+      => SOP.ConstructorInfo b
+      -> SOP.NP Output b
+   f (SOP.Record _ fis) =
+      SOP.hcmap
+         (Proxy @DecodeDefault)
+         (\(SOP.FieldInfo s) -> decode (fromString s) decodeDefault)
+         fis
+   f _ = undefined -- impossible due to OnlyRecords
 
 --------------------------------------------------------------------------------
 
@@ -237,6 +274,20 @@ houtputDefault = houtput (SOP.hcpure (Proxy @OutputDefault) outputDefault)
 -- must roundtrip with the 'Sq.OutputDefault' instance for @o@.
 class OutputDefault o where
    outputDefault :: Output o
+
+   -- | 'goutputDefault' is used as default implementation.
+   default outputDefault :: (GOutputDefault o) => Output o
+   outputDefault = goutputDefault
+
+-- | We don't export this, because we export 'OutputDefault' instances for
+-- 'SOP.NS', 'SOP.NP', 'SOP.SOP' and 'SOP.POP'.
+houtputDefault
+   :: ( HOutput h xs
+      , SOP.AllN (SOP.Prod h) OutputDefault xs
+      , SOP.HPure (SOP.Prod h)
+      )
+   => Output (h SOP.I xs)
+houtputDefault = houtput (SOP.hcpure (Proxy @OutputDefault) outputDefault)
 
 -- | Read "Data.SOP".
 --

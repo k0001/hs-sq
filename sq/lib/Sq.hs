@@ -14,6 +14,10 @@
 --
 -- * Type-safe __decoding__ of SQL output rows and columns ('Decode', 'Output').
 --
+-- * Type-safe __automatic__ derivation of 'Input' and 'Output' codecs for
+-- records and sums of records via 'GHC.Generic' ('ginputDefault',
+-- 'goutputDefault').
+--
 -- * Type-safe __concurrent connections__ with read and write database access
 -- ('Pool').
 --
@@ -62,9 +66,11 @@ module Sq
    , Input
    , encode
    , input
-   , hinput
-   , HInput
+   -- , hintput  Do we need to export this?
+   -- , HIntput  Do we need to export this?
    , InputDefault (..)
+   , ginputDefault
+   , GInputDefault
 
     -- *** Encode
    , Encode (..)
@@ -82,9 +88,11 @@ module Sq
    , Output
    , decode
    , output
-   , houtput
-   , HOutput
+   -- , houtput  Do we need to export this?
+   -- , HOutput  Do we need to export this?
    , OutputDefault (..)
+   , goutputDefault
+   , GOutputDefault
 
     -- *** Decode
    , Decode (..)

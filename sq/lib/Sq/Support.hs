@@ -14,6 +14,7 @@ module Sq.Support
    , foldZeroM
    , foldOneM
    , HAsum (..)
+   , OnlyRecords
    ) where
 
 import Control.Applicative
@@ -26,12 +27,14 @@ import Data.Acquire qualified as A
 import Data.Function
 import Data.IORef
 import Data.Int
+import Data.Kind
 import Data.List.NonEmpty qualified as NEL
 import Data.SOP qualified as SOP
 import Data.String
 import Data.Word
 import GHC.IO.Exception
 import GHC.Stack
+import Generics.SOP.Type.Metadata qualified as SOPT
 import System.Directory
 import System.FilePath
 import System.IO.Error (isAlreadyExistsError)
@@ -215,3 +218,21 @@ asum_POP
    -> f (SOP.POP SOP.I xss)
 asum_POP = SOP.hsequence
 {-# INLINE asum_POP #-}
+
+--------------------------------------------------------------------------------
+
+type OnlyRecords :: SOPT.DatatypeInfo -> Constraint
+type OnlyRecords = OnlyRecords'
+
+-- | Class so that it can be partially applied.
+--
+-- Not exported so people don't add instances.
+class OnlyRecords' (di :: SOPT.DatatypeInfo)
+
+instance (IsRecord ci) => OnlyRecords' ('SOPT.Newtype mn dn ci)
+instance (SOP.All IsRecord cis) => OnlyRecords' ('SOPT.ADT mn dn cis sis)
+
+-- | Not exported so people don't add instances.
+class IsRecord (ci :: SOPT.ConstructorInfo)
+
+instance IsRecord ('SOPT.Record cn fis)

@@ -13,6 +13,8 @@ module Sq.Input
    , ErrInput (..)
    , rawBoundInput
    , InputDefault (..)
+   , ginputDefault
+   , GInputDefault
    ) where
 
 import Control.DeepSeq
@@ -22,6 +24,7 @@ import Data.Coerce
 import Data.Functor.Contravariant
 import Data.Functor.Contravariant.Divisible
 import Data.Functor.Contravariant.Rep
+import Data.Kind
 import Data.List.NonEmpty qualified as NEL
 import Data.Map.Strict qualified as Map
 import Data.Profunctor
@@ -31,9 +34,13 @@ import Data.SOP.Constraint qualified as SOP
 import Data.String
 import Data.Text qualified as T
 import Database.SQLite3 qualified as S
+import GHC.Generics qualified as G
+import Generics.SOP qualified as SOP
+import Generics.SOP.GGP qualified as SOP
 
 import Sq.Encoders
 import Sq.Names
+import Sq.Support (OnlyRecords)
 
 --------------------------------------------------------------------------------
 
@@ -179,7 +186,8 @@ rawBoundInput = coerce
 
 --------------------------------------------------------------------------------
 
--- | 'Data.Kind.Constraint' to be satisfied for using 'hinput'.
+-- | 'Constraint' to be satisfied for using 'hinput'.
+type HInput :: ((Type -> Type) -> k -> Type) -> k -> Constraint
 type HInput h xs =
    ( SOP.AllN h SOP.Top xs
    , SOP.HAp (SOP.Prod h)
@@ -215,6 +223,42 @@ hinputDefault = hinput (SOP.hcpure (Proxy @InputDefault) inputDefault)
 
 --------------------------------------------------------------------------------
 
+-- | 'Constraint' to be satisfied for using 'ginputDefault'.
+type GInputDefault :: Type -> Constraint
+type GInputDefault i =
+   ( OnlyRecords (SOP.GDatatypeInfoOf i)
+   , SOP.All2 EncodeDefault (SOP.GCode i)
+   , G.Generic i
+   , SOP.GFrom i
+   , SOP.GDatatypeInfo i
+   , HInput SOP.SOP (SOP.GCode i)
+   )
+
+-- | Generic 'Input' implementation for types with GHC 'G.Generic' instance
+-- where all the constructors are records with named fields, to be used as
+-- 'Name's, and each field type has a 'EncodeDefault' instance.
+ginputDefault :: forall i. (GInputDefault i) => Input i
+ginputDefault =
+   contramap SOP.gfrom $ hinput $ SOP.POP do
+      case SOP.gdatatypeInfo (Proxy @i) of
+         SOP.Newtype _ _ ci -> f ci SOP.:* SOP.Nil
+         SOP.ADT _ _ cis _ ->
+            SOP.hcmap (Proxy @(SOP.All EncodeDefault)) f cis
+  where
+   f
+      :: forall b
+       . (SOP.All EncodeDefault b)
+      => SOP.ConstructorInfo b
+      -> SOP.NP Input b
+   f (SOP.Record _ fis) =
+      SOP.hcmap
+         (Proxy @EncodeDefault)
+         (\(SOP.FieldInfo s) -> encode (fromString s) encodeDefault)
+         fis
+   f _ = undefined -- impossible due to OnlyRecords
+
+--------------------------------------------------------------------------------
+
 -- | Default way to encode a Haskell value of type @i@ as the 'Input' to a
 -- 'Sq.Statement'.
 --
@@ -222,6 +266,10 @@ hinputDefault = hinput (SOP.hcpure (Proxy @InputDefault) inputDefault)
 -- must roundtrip with the 'Sq.InputDefault' instance for @i@.
 class InputDefault i where
    inputDefault :: Input i
+
+   -- | 'ginputDefault' is used as default implementation.
+   default inputDefault :: (GInputDefault i) => Input i
+   inputDefault = ginputDefault
 
 instance InputDefault (Map.Map Name S.SQLData) where
    inputDefault = Input $ Map.foldMapWithKey \n d ->

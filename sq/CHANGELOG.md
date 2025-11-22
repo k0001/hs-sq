@@ -6,11 +6,14 @@
 
 * REMOVED `decodeSizedIntegral`. Use `decodeBoundedIntegral` instead.
 
-* Added `hinput`, `houtput`, `encodeNS`, `decodeNS`, `encodeAeson'`.
+* Added `encodeNS`, `decodeNS`, `encodeAeson'`, `ginputDefault` and
+  `goutputDefault`.
 
 * Added `Contravariant` `Rep` instance for `Encode` and `Input`.
 
-* Added `InputDefault`, `OutputDefault` and related instances.
+* Added `InputDefault`, `OutputDefault` and related instances, using
+  `ginputDefault` and `goutputDefault` when possible as default
+  derivation records and sums of records deriving GHC's `Generic`.
 
 * Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`,
   for `binary`'s `Put`, for `UUID`, for `Scientific`, for `Fixed`.
