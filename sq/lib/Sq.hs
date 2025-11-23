@@ -43,8 +43,7 @@
 --
 -- Things not supported yet:
 --
--- * Type-safe 'SQL'.
---
+-- * Type-safe 'SQL' strings.
 --
 -- * Probably other things.
 --

@@ -130,8 +130,8 @@ decode n vda = Output_Decode (BindingName (pure n)) (Output_Pure <$> vda)
 -- @
 -- 'Sq.readStatement'
 --         'mempty'
---         ('liftA2' ('output' \"p1\" pointInput)
---                 ('output' \"p2\" pointInput))
+--         ('liftA2' ('output' \"p1\" pointOutput)
+--                 ('output' \"p2\" pointOutput))
 --         ['Sq.sql'|
 --           SELECT ax AS p1\__x, ay AS p1\__y,
 --                  bx AS p2\__x, by AS p2\__y
