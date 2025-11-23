@@ -76,6 +76,7 @@ library
     foldl,
     generics-sop,
     integer-logarithms,
+    network-uri,
     profunctors,
     ref-tf,
     resource-pool,

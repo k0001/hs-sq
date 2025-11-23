@@ -43,6 +43,7 @@ import Data.Text.Lazy qualified as TL
 import Data.Text.Unsafe qualified as T
 import Data.Time qualified as Time
 import Data.Time.Clock.POSIX qualified as Time
+import Network.URI qualified as URI
 
 import Data.Time.Format.ISO8601 qualified as Time
 import Data.UUID.Types qualified as UUID
@@ -382,7 +383,7 @@ instance DecodeDefault Int where
 instance DecodeDefault Natural where
    decodeDefault =
       decodeRefine
-         (maybe (Left "Underflow") Right . toIntegralSized)
+         (note "Underflow" . toIntegralSized)
          (decodeDefault @Integer)
    {-# INLINE decodeDefault #-}
 
@@ -525,7 +526,7 @@ instance DecodeDefault UUID.UUID where
    decodeDefault =
       {-# SCC "decodeDefault/UUID" #-}
       ( decodeRefine
-         (maybe (Left "Not valid UUID") Right . UUID.fromText)
+         (note "Not valid UUID" . UUID.fromText)
          decodeDefault
       )
 
@@ -578,8 +579,13 @@ instance DecodeDefault Sci.Scientific where
       )
 
 scientificFromText :: T.Text -> Maybe Sci.Scientific
-scientificFromText =
-   either (const Nothing) Just . AB.parseOnly Aep.scientific . T.encodeUtf8
+scientificFromText = hush . AB.parseOnly Aep.scientific . T.encodeUtf8
+
+-- | 'S.TextColumn'. Uses @'URI.parseURIReference', which supports both absolute
+-- and relative 'URI.URI's with optional fragment identifiers.
+instance DecodeDefault URI.URI where
+   decodeDefault =
+      decodeRefine (note "Invalid URI" . URI.parseURIReference) decodeDefault
 
 --------------------------------------------------------------------------------
 

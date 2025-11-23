@@ -16,10 +16,11 @@
   derivation records and sums of records deriving GHC's `Generic`.
 
 * Added `EncodeDefault` instances for `aeson`'s `Encoding and `Value`,
-  for `binary`'s `Put`, for `UUID`, for `Scientific`, for `Fixed`.
+  for `binary`'s `Put`, for `UUID`, for `Scientific`, for `Fixed`, for
+  `network-uri`'s `URI`.
 
 * Added `DecodeDefault` instances for `UUID`, for `aeson`'s `Value`, for
-  `Scientific`, for `Fixed`.
+  `Scientific`, for `Fixed`, for `network-uri`'s `URI`.
 
 * Export `BindingName` constructor.
 

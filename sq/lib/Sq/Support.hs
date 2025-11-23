@@ -1,6 +1,7 @@
 module Sq.Support
    ( resourceVanishedWithCallStack
    , note
+   , hush
    , hushThrow
    , show'
    , newUnique
@@ -51,6 +52,10 @@ resourceVanishedWithCallStack s =
 note :: a -> Maybe b -> Either a b
 note a = maybe (Left a) Right
 {-# INLINE note #-}
+
+hush :: Either a b -> Maybe b
+hush = either (const Nothing) Just
+{-# INLINE hush #-}
 
 hushThrow :: (Ex.Exception e, Ex.MonadThrow m) => Either e b -> m b
 hushThrow = either Ex.throwM pure

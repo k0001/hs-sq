@@ -47,6 +47,7 @@ import Database.SQLite3 qualified as S
 import GHC.Float (float2Double)
 import GHC.Stack
 import Math.NumberTheory.Logarithms
+import Network.URI qualified as URI
 import Numeric.Natural
 
 import Sq.Null (Null)
@@ -437,6 +438,10 @@ instance forall e. (HasResolution e) => EncodeDefault (Fixed e) where
      where
       e10 :: Int
       e10 = negate $ integerLog10 $ resolution $ Proxy @e
+
+-- | 'S.TextColumn'. Uses @'URI.uriToString' 'id'@.
+instance EncodeDefault URI.URI where
+   encodeDefault = flip (URI.uriToString id) "" >$< encodeDefault
 
 --------------------------------------------------------------------------------
 
