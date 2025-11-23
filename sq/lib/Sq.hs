@@ -177,6 +177,7 @@ module Sq
    , Mode (..)
    , SubMode
    , Null (..)
+   , RowId (..)
 
     -- * Errors
    , ErrEncode (..)
@@ -199,11 +200,16 @@ import Control.Monad.IO.Class
 import Control.Monad.Trans.Resource qualified as R
 import Control.Monad.Trans.Resource.Extra qualified as R
 import Data.Acquire qualified as A
+import Data.Aeson qualified as Ae
+import Data.Binary qualified as Bin
 import Data.Function
+import Data.Int
 import Database.SQLite3 qualified as S
 import Di.Df1 qualified as Di
+import GHC.Generics (Generic)
 import System.FilePath
 import Prelude hiding (Read, maybe, read)
+import Prelude qualified
 
 import Sq.Connection
 import Sq.Decoders
@@ -346,6 +352,35 @@ rollback
    -> m a
 rollback p = transactionalRetry $ rollbackTransaction p
 {-# INLINE rollback #-}
+
+--------------------------------------------------------------------------------
+
+-- | Newtype wrapper for the typical @rowid@ column in SQLite.
+--
+-- See <https://sqlite.org/rowidtable.html>
+newtype RowId = RowId Int64
+   deriving newtype
+      ( Eq
+      , Ord
+      , Show
+      , Prelude.Read
+      , EncodeDefault
+      , DecodeDefault
+      , Ae.ToJSON
+      , Ae.FromJSON
+      , Bin.Binary
+      )
+   deriving stock (Generic)
+
+-- | Uses @rowid@ as 'Name'.
+instance InputDefault RowId where
+   inputDefault = encode "rowid" encodeDefault
+   {-# INLINE inputDefault #-}
+
+-- | Uses @rowid@ as 'Name'.
+instance OutputDefault RowId where
+   outputDefault = decode "rowid" decodeDefault
+   {-# INLINE outputDefault #-}
 
 --------------------------------------------------------------------------------
 

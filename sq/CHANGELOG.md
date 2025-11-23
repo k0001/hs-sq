@@ -6,8 +6,8 @@
 
 * REMOVED `decodeSizedIntegral`. Use `decodeBoundedIntegral` instead.
 
-* Added `encodeNS`, `decodeNS`, `encodeAeson'`, `ginputDefault` and
-  `goutputDefault`.
+* Added `encodeNS`, `decodeNS`, `encodeAeson'`, `ginputDefault`,
+  `goutputDefault`, `RowId`.
 
 * Added `Contravariant` `Rep` instance for `Encode` and `Input`.
 
