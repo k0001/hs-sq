@@ -15,6 +15,7 @@ where
 
 import Control.Exception.Safe qualified as Ex
 import Data.Aeson qualified as Ae
+import Data.Aeson.Key qualified as Aek
 import Data.Bifunctor
 import Data.Binary qualified as Bin
 import Data.Binary.Put qualified as Bin
@@ -412,6 +413,10 @@ instance EncodeDefault Ae.Encoding where
 instance EncodeDefault Ae.Value where
    encodeDefault = encodeAeson' Right
    {-# INLINE encodeDefault #-}
+
+-- | 'S.TextColumn'.
+instance EncodeDefault Aek.Key where
+   encodeDefault = Aek.toText >$< encodeDefault
 
 -- | 'S.BlobColumn'.
 instance EncodeDefault Bin.Put where

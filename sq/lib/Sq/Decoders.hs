@@ -20,6 +20,7 @@ import Control.Monad
 import Control.Monad.Catch qualified as Ex (MonadThrow (..))
 import Control.Monad.Trans.Reader
 import Data.Aeson qualified as Ae
+import Data.Aeson.Key qualified as Aek
 import Data.Aeson.Parser qualified as Aep
 import Data.Aeson.Types qualified as Ae
 import Data.Attoparsec.ByteString qualified as AB
@@ -535,6 +536,10 @@ instance DecodeDefault Ae.Value where
    decodeDefault =
       {-# SCC "decodeDefault/Ae.Value" #-}
       (decodeRefine Ae.eitherDecodeStrictText decodeDefault)
+
+-- | 'S.TextColumn'.
+instance DecodeDefault Aek.Key where
+   decodeDefault = Aek.fromText <$> decodeDefault
 
 -- | 'S.IntegerColumn', 'S.FloatColumn', 'S.TextColumn'.
 instance forall e. (HasResolution e) => DecodeDefault (Fixed e) where
