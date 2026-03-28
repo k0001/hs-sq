@@ -233,7 +233,7 @@ exclusiveConnection smode di0 cs = do
          [ "PRAGMA synchronous=NORMAL"
          , "PRAGMA journal_size_limit=67108864" -- 64 MiB
          , "PRAGMA mmap_size=134217728" -- 128 MiB
-         , "PRAGMA cache_size=2000" -- 2000 pages
+         , "PRAGMA cache_size=-65536" -- ~64 MiB (negative = kibibytes)
          ]
    statements :: IORef (Map SQL PreparedStatement) <-
       R.mkAcquire1 (newIORef mempty) \r ->
@@ -342,7 +342,8 @@ setBusyHandler (S.Database pDB) tmaxMS = do
 
 -- While the 'Transaction' is active, an exclusive lock is held on the
 -- underlying 'Connection'.
-data Transaction (t :: Mode) = forall c.
+data Transaction (t :: Mode)
+   = forall c.
     (SubMode c t) =>
    Transaction
    { _id :: TransactionId
