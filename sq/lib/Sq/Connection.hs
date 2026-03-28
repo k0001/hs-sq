@@ -97,7 +97,7 @@ data Settings = Settings
    -- ^ Database file path. Not an URI.
    --
    -- Note: To keep things simple, native @:memory:@ SQLite databases are not
-   -- supported. Maybe use 'Sq.poolTemp' or @tmpfs@ if you need that?
+   -- supported. Maybe use 'Sq.tempPool' or @tmpfs@ if you need that.
    , vfs :: S.SQLVFS
    , timeout :: Word32
    -- ^ SQLite busy Timeout in milliseconds.
