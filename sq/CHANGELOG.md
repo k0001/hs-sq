@@ -1,3 +1,8 @@
+# Version 0.1.1
+
+* Set `PRAGMA foreign_keys=ON` by default.
+
+
 # Version 0.1
 
 * CHANGED the type of `encodeAeson` and `encodeBinary`.

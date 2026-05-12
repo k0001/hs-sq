@@ -10,7 +10,7 @@
 }:
 mkDerivation {
   pname = "sq";
-  version = "0.1";
+  version = "0.1.1";
   src = ./.;
   libraryHaskellDepends = [
     adjunctions aeson attoparsec attoparsec-aeson attoparsec-iso8601

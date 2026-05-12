@@ -92,6 +92,16 @@ modeFlags = \case
 --------------------------------------------------------------------------------
 
 -- | SQLite connection settings.
+--
+-- Note: The following PRAGMAs are set.
+--
+-- @
+-- synchronous = NORMAL
+-- journal_size_limit = 67108864 /-- 64 MiB/
+-- mmap_size = 134217728 /-- 128 MiB/
+-- cache_size = -65536 /-- ~64 MiB (negative = kibibytes)/
+-- foreign_keys = ON
+-- @
 data Settings = Settings
    { file :: FilePath
    -- ^ Database file path. Not an URI.
@@ -234,6 +244,7 @@ exclusiveConnection smode di0 cs = do
          , "PRAGMA journal_size_limit=67108864" -- 64 MiB
          , "PRAGMA mmap_size=134217728" -- 128 MiB
          , "PRAGMA cache_size=-65536" -- ~64 MiB (negative = kibibytes)
+         , "PRAGMA foreign_keys=ON"
          ]
    statements :: IORef (Map SQL PreparedStatement) <-
       R.mkAcquire1 (newIORef mempty) \r ->
